@@ -25,7 +25,7 @@ test("new session requires a model and authentication; opens a distinct actor in
   assert.deepEqual(h.commands[0]?.type === "create" && h.commands[0].spec.model, model);
   const first = h.commands[0];
   assert.ok(first?.type === "create");
-  assert.deepEqual(h.opens[0], { id: first.spec.sessionId, workspaceSlug: "agents", keepAliveSeconds: 3600 });
+  assert.deepEqual(h.opens[0], { id: first.spec.sessionId, workspaceSlug: "agents", keepAliveSeconds: 300 });
   await h.request("/sessions", spec);
   assert.notDeepEqual(h.opens[0], h.opens[1]);
   await h.request("/sessions/messages", { sessionId: first.spec.sessionId, prompt: "Continue" });
@@ -58,7 +58,7 @@ test("events require a session ID and route to its actor", async () => {
   const h = harness();
   assert.equal((await h.request("/events", undefined, { authorization: "Bearer api-secret" }, "GET")).status, 400);
   assert.equal((await h.request("/events?sessionId=session-one", undefined, { authorization: "Bearer api-secret" }, "GET")).status, 200);
-  assert.deepEqual(h.opens, [{ id: "session-one", workspaceSlug: "agents", keepAliveSeconds: 3600 }]);
+  assert.deepEqual(h.opens, [{ id: "session-one", workspaceSlug: "agents", keepAliveSeconds: 300 }]);
 });
 test("issue redeliveries route to the same issue actor", async () => {
   const h = harness();

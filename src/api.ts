@@ -25,7 +25,7 @@ async function bodyBytes(request: Request): Promise<Uint8Array> {
   return bytes;
 }
 export default defineApi<Command>(({ app, env, router }) => {
-  const worker = (id: string) => app.sessions.open({ id, workspaceSlug: env.WORKSPACE_SLUG ?? "agents", keepAliveSeconds: 3600 });
+  const worker = (id: string) => app.sessions.open({ id, workspaceSlug: env.WORKSPACE_SLUG ?? "agents", keepAliveSeconds: 300 });
   async function dispatch(command: Command) {
     const id = command.type === "create" ? command.spec.sessionId
       : command.type === "issue" ? await issueSessionId(command.issue.repository, command.issue.number)
