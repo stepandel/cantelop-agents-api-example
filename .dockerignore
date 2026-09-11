@@ -1,0 +1,7 @@
+.git
+.env
+.env.*
+node_modules
+.cantelop
+.agent-api
+repositories
