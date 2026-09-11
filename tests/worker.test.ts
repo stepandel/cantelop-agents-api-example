@@ -59,6 +59,7 @@ test("API and webhook secrets are absent from agent subprocess environment", () 
   assert.equal(actual.OPENAI_API_KEY, undefined);
   assert.equal(actual.OPENROUTER_API_KEY, "test-openrouter");
   assert.deepEqual(JSON.parse(actual.OPENCODE_CONFIG_CONTENT!).enabled_providers, ["openrouter"]);
+  assert.deepEqual(JSON.parse(actual.OPENCODE_CONFIG_CONTENT!).permission, { "*": "allow", question: "deny" });
   assert.equal(actual.OPENCODE_CONFIG_CONTENT?.includes("model"), false);
 });
 test("shared checkout refuses switching branches when changes remain", async t => {

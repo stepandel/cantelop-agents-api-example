@@ -30,7 +30,7 @@ export function agentEnvironment(root: string, env: Env): Record<string, string>
     GIT_AUTHOR_NAME: "Cantelop Agent", GIT_COMMITTER_NAME: "Cantelop Agent",
     GIT_AUTHOR_EMAIL: "agent@users.noreply.github.com", GIT_COMMITTER_EMAIL: "agent@users.noreply.github.com",
     OPENCODE_DISABLE_AUTOUPDATE: "true",
-    OPENCODE_CONFIG_CONTENT: JSON.stringify({ enabled_providers: ["openrouter"], permission: { edit: "allow", bash: "allow", webfetch: "allow", external_directory: "deny" } }),
+    OPENCODE_CONFIG_CONTENT: JSON.stringify({ enabled_providers: ["openrouter"], permission: { "*": "allow", question: "deny" } }),
   };
   result.OPENROUTER_API_KEY = env.OPENROUTER_API_KEY;
   return result;

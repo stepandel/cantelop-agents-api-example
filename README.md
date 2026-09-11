@@ -204,3 +204,12 @@ Session creation and issue-rule requests now take a model string, not a
 `{ providerID, modelID }` object. Recreate any legacy sessions and update legacy
 issue rules that stored that object before continuing them. Models still come from
 API requests; the provider is always OpenRouter.
+
+### Unattended tool permissions
+
+The runtime sets `permission: { "*": "allow", "question": "deny" }`. Tools run
+without OpenCode approval prompts, including Bash, edits, external-directory
+access and repeated tool calls. The interactive question tool is disabled because
+this API has no question-answer endpoint. This does not change the container's OS
+permissions, GitHub token scopes, or repository branch protections. Repository or
+agent-specific OpenCode configuration can override global permissions.
