@@ -2,7 +2,7 @@ import path from "node:path";
 import { withWorkspaceLock } from "./lock.js";
 import { createHash } from "node:crypto";
 import { agentEnvironment, checkout, readJSON, runAgent, saveJSON, type Env } from "./runtime.js";
-import { issueSessionId, repository, sessionId, type Command, type Event, type Model, type SessionSpec } from "./contracts.js";
+import { issueSessionId, model, repository, sessionId, type Command, type Event, type Model, type SessionSpec } from "./contracts.js";
 export interface StoredSession extends SessionSpec { opencodeId?: string; status: "running" | "completed" | "failed"; response?: string }
 export interface Dependencies {
   checkout: typeof checkout;
@@ -32,7 +32,7 @@ async function handleLocked(root: string, command: Command, messageId: string, e
   if (command.type === "rule") {
     repository(command.repository, env.GITHUB_REPOSITORIES);
     const rules = await readJSON<Record<string, Model>>(rulesFile) ?? {};
-    rules[command.repository] = command.model;
+    rules[command.repository] = model(command.model);
     await saveJSON(rulesFile, rules);
     return event("configured", { repository: command.repository, model: command.model });
   }
@@ -58,6 +58,7 @@ async function handleLocked(root: string, command: Command, messageId: string, e
     if (!stored) throw new Error("Session does not exist");
     spec = { ...stored, prompt: command.prompt };
   }
+  spec = { ...spec, model: model(spec.model) };
   repository(spec.repository, env.GITHUB_REPOSITORIES);
   const file = sessionFile(spec.sessionId);
   const previous = await readJSON<StoredSession>(file);

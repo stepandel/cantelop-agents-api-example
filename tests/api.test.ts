@@ -14,7 +14,7 @@ function harness() {
   const router = api.create({ app, env: { API_TOKEN: "api-secret", GITHUB_WEBHOOK_SECRET: "webhook-secret", GITHUB_REPOSITORIES: "owner/repo" } });
   return { commands, opens, request: (path: string, body: unknown, headers: Record<string, string> = { authorization: "Bearer api-secret" }, method = "POST") => router.handle(new Request(`https://example.com${path}`, { method, headers, body: JSON.stringify(body) })) };
 }
-const model = { providerID: "provider", modelID: "requested-model" };
+const model = "anthropic/claude-sonnet-4.5";
 test("new session requires a model and authentication; opens a distinct actor in the shared workspace", async () => {
   const h = harness();
   const spec = { repository: "owner/repo", prompt: "Fix tests", model };
@@ -70,4 +70,12 @@ test("issue redeliveries route to the same issue actor", async () => {
   assert.ok(first.sessionId.startsWith("issue-"));
   assert.equal(first.events, `/events?sessionId=${first.sessionId}`);
   assert.deepEqual(h.opens[0], h.opens[1]);
+});
+test("rejects provider objects for sessions and issue rules", async () => {
+  const h = harness();
+  for (const value of [{ providerID: "anthropic", modelID: "chosen" }, { providerID: "openrouter", modelID: "chosen" }, "", null]) {
+    assert.equal((await h.request("/sessions", { repository: "owner/repo", prompt: "Fix", model: value })).status, 400);
+    assert.equal((await h.request("/github/issue-rules", { repository: "owner/repo", model: value }, { authorization: "Bearer api-secret" }, "PUT")).status, 400);
+  }
+  assert.equal(h.commands.length, 0);
 });

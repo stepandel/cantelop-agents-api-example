@@ -8,8 +8,6 @@
     "GITHUB_WEBHOOK_SECRET": { "secret": true, "required": true },
     "GITHUB_REPOSITORIES": { "required": true },
     "WORKSPACE_SLUG": { "default": "agents" },
-    "ANTHROPIC_API_KEY": { "secret": true },
-    "OPENAI_API_KEY": { "secret": true },
-    "OPENROUTER_API_KEY": { "secret": true }
+    "OPENROUTER_API_KEY": { "secret": true, "required": true }
   }
 }

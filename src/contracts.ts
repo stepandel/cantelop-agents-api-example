@@ -1,4 +1,4 @@
-export interface Model { providerID: string; modelID: string }
+export type Model = string;
 export interface SessionSpec { sessionId: string; repository: string; model: Model; prompt: string }
 export interface Issue { number: number; title: string; body: string; repository: string; association: string }
 export type Command =
@@ -22,8 +22,7 @@ export function text(value: unknown, name: string, max = 50000): string {
   return value;
 }
 export function model(value: unknown): Model {
-  const v = object(value);
-  return { providerID: text(v.providerID, "providerID", 200), modelID: text(v.modelID, "modelID", 200) };
+  return text(value, "OpenRouter model ID", 200);
 }
 export function sessionId(value: unknown): string {
   const id = text(value, "sessionId", 100);

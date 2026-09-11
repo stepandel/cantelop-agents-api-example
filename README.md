@@ -30,12 +30,13 @@ updates use temporary actors and take the same workspace lock.
 OpenCode is started on loopback for each turn and stopped before the next turn.
 Its persisted conversation ID is reused. The selected model is explicitly passed
 to every prompt using the OpenCode SDK, because its session-create endpoint does
-not select a model. Provider keys are supplied separately to the subprocess.
+not select a model. The OpenRouter key is supplied separately to the subprocess. OpenCode enables
+only OpenRouter and every prompt explicitly uses `providerID: "openrouter"`.
 
 ## Setup
 
 Prerequisites: Node 22.12+, the Cantelop CLI, Docker for image builds, and an
-OpenCode-supported provider account. For non-container local development, install
+OpenRouter account. For non-container local development, install
 `opencode-ai@1.18.30` globally. The Dockerfile already installs that version.
 
 ```sh
@@ -54,9 +55,10 @@ Git authenticates through subprocess environment configuration; tokens are never
 embedded in clone URLs or written to Git config. The agent can also use
 `GITHUB_TOKEN` for GitHub REST API access.
 
-Set at least one supported provider key from `.env.example`. Use a provider/model
-pair available to that account; an unavailable model fails the turn. The scaffold
-never silently substitutes a different model.
+Set `OPENROUTER_API_KEY` from `.env.example`. Supply an OpenRouter model ID as
+a string, for example `"model": "anthropic/claude-sonnet-4.5"`. Individual provider
+keys and provider selection are not supported. An unavailable model fails the turn;
+the scaffold never silently substitutes a different model.
 
 This is a **single trusted operator** scaffold. One API token grants access to all
 configured repositories and all session events. It does not implement per-user
@@ -83,7 +85,7 @@ Create a new session (replace the example model with one available to you):
 curl http://localhost:8787/sessions \
   -H "Authorization: Bearer $API_TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"repository":"alice/app","model":{"providerID":"anthropic","modelID":"claude-sonnet-4-5"},"prompt":"Fix the failing tests, commit and push the agent branch."}'
+  -d '{"repository":"alice/app","model":"anthropic/claude-sonnet-4.5","prompt":"Fix the failing tests, commit and push the agent branch."}'
 ```
 
 The response includes `sessionId`, `messageId`, and `events`. Follow up without
@@ -120,7 +122,7 @@ rule **through the API** first; wait for its `configured` event:
 curl -X PUT http://localhost:8787/github/issue-rules \
   -H "Authorization: Bearer $API_TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"repository":"alice/app","model":{"providerID":"anthropic","modelID":"claude-sonnet-4-5"}}'
+  -d '{"repository":"alice/app","model":"anthropic/claude-sonnet-4.5"}'
 ```
 
 In the repository's Settings → Webhooks, add:
@@ -167,7 +169,7 @@ writes occur during scaffold tests or setup.
   automatic PR creation, or state retention cleanup.
 - All sessions can see the shared filesystem. Agent instructions are guidance,
   not a security boundary. API/webhook secrets are excluded from subprocess env;
-  provider and GitHub credentials must be available to the agent.
+  OpenRouter and GitHub credentials must be available to the agent.
 
 ## Deployment and validation
 
@@ -195,3 +197,10 @@ Existing stored conversation IDs/models remain usable through their new per-ID
 actors in the same workspace. Event subscriptions must now include `sessionId`;
 there is no global event stream. Issue-rule updates return their own session ID
 and event URL so their completion can be observed.
+
+### OpenRouter-only request format
+
+Session creation and issue-rule requests now take a model string, not a
+`{ providerID, modelID }` object. Recreate any legacy sessions and update legacy
+issue rules that stored that object before continuing them. Models still come from
+API requests; the provider is always OpenRouter.

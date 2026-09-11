@@ -6,8 +6,8 @@ import { test } from "node:test";
 import { handle, type Dependencies } from "../src/worker.js";
 import { agentEnvironment, checkout, git } from "../src/runtime.js";
 import type { Command } from "../src/contracts.js";
-const env = { GITHUB_TOKEN: "test-only", GITHUB_REPOSITORIES: "owner/repo" };
-const model = { providerID: "provider", modelID: "chosen" };
+const env = { GITHUB_TOKEN: "test-only", OPENROUTER_API_KEY: "test-openrouter", GITHUB_REPOSITORIES: "owner/repo" };
+const model = "anthropic/claude-sonnet-4.5";
 async function harness(t: { after: (fn: () => Promise<void>) => void }) {
   const root = await mkdtemp(path.join(os.tmpdir(), "cantelop-test-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -52,10 +52,13 @@ test("failed side effects are not automatically replayed", async t => {
   assert.equal((await h.run(command, "m1")).type, "failed");
 });
 test("API and webhook secrets are absent from agent subprocess environment", () => {
-  const actual = agentEnvironment("/workspace", { ...env, API_TOKEN: "private-api", GITHUB_WEBHOOK_SECRET: "private-webhook", ANTHROPIC_API_KEY: "provider-key" });
+  const actual = agentEnvironment("/workspace", { ...env, API_TOKEN: "private-api", GITHUB_WEBHOOK_SECRET: "private-webhook", ANTHROPIC_API_KEY: "unused", OPENAI_API_KEY: "unused" });
   assert.equal(actual.API_TOKEN, undefined);
   assert.equal(actual.GITHUB_WEBHOOK_SECRET, undefined);
-  assert.equal(actual.ANTHROPIC_API_KEY, "provider-key");
+  assert.equal(actual.ANTHROPIC_API_KEY, undefined);
+  assert.equal(actual.OPENAI_API_KEY, undefined);
+  assert.equal(actual.OPENROUTER_API_KEY, "test-openrouter");
+  assert.deepEqual(JSON.parse(actual.OPENCODE_CONFIG_CONTENT!).enabled_providers, ["openrouter"]);
   assert.equal(actual.OPENCODE_CONFIG_CONTENT?.includes("model"), false);
 });
 test("shared checkout refuses switching branches when changes remain", async t => {
@@ -69,4 +72,7 @@ test("shared checkout refuses switching branches when changes remain", async t =
   await writeFile(path.join(directory, "work.txt"), "unfinished");
   assert.equal(await checkout(h.root, "owner/repo", "one", gitEnv, signal), directory);
   await assert.rejects(checkout(h.root, "owner/repo", "two", gitEnv, signal), /uncommitted changes/);
+});
+test("OpenRouter key is required even when another provider key exists", () => {
+  assert.throws(() => agentEnvironment("/workspace", { GITHUB_TOKEN: "test", OPENAI_API_KEY: "unused" }), /OpenRouter credentials/);
 });
