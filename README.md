@@ -8,14 +8,20 @@ posts its final summary to the issue.
 
 ## Architecture
 
-All requests use **one Cantelop Workspace** (`WORKSPACE_SLUG`, default `agents`)
-and **one Cantelop Session actor** (`agent-coordinator`). That actor awaits each
-complete turn, serializing work across separate OpenCode conversation sessions.
-This avoids racing Git branch changes in the shared checkout. API session IDs
-refer to these logical OpenCode conversations, not separate Cantelop actors.
+All requests use **one Cantelop Workspace** (`WORKSPACE_SLUG`, default `agents`).
+Each API-created session gets a **distinct Cantelop Session actor**, using the API
+session UUID as its actor ID. Follow-ups and event streams address that same ID.
+Each actor owns a separate persisted OpenCode conversation.
+
+An atomic filesystem lock at `.agent-api/workspace.lock` serializes complete turns
+across actors sharing the workspace. It covers Git checkout, agent tools, receipts,
+and state updates, preventing one session from switching another's active branch.
+Issue deliveries use a deterministic actor ID per repository/issue; issue-rule
+updates use temporary actors and take the same workspace lock.
 
 - `src/api.ts`: authentication, input validation, webhook verification, dispatch, SSE.
-- `src/session.ts`: serialized Cantelop worker entry point.
+- `src/session.ts`: per-session Cantelop worker entry point.
+- `src/lock.ts`: cross-process workspace lock with cancellable waiting.
 - `src/worker.ts`: durable session models, issue rules, receipts and outcomes.
 - `src/runtime.ts`: authenticated Git, shared checkouts, OpenCode lifecycle.
 - `repositories/OWNER/REPO`: one shared clone per repository; `agent/SESSION_ID` branches.
@@ -63,11 +69,11 @@ agent shell commands; scope the GitHub token accordingly.
 
 All routes except `/health` and `/webhooks/github` require
 `Authorization: Bearer YOUR_API_TOKEN`. Commands return `202` after Cantelop
-accepts them, **not after the agent completes**. Start an SSE connection first and
-correlate output by `messageId`:
+accepts them, **not after the agent completes**. Connect to the session-specific
+`events` URL returned by dispatch and correlate output by `messageId`:
 
 ```sh
-curl -N http://localhost:8787/events \
+curl -N "http://localhost:8787/events?sessionId=SESSION_ID" \
   -H "Authorization: Bearer $API_TOKEN"
 ```
 
@@ -101,7 +107,7 @@ curl http://localhost:8787/sessions/inspect \
 
 It returns `202`; the correlated `session` event contains the stored model,
 OpenCode ID, prompt, status and latest response (or `null` for an unknown session).
-Inspection shares the queue and therefore waits for active work. Completion events
+Inspection takes the workspace lock and therefore waits for active work. Completion events
 contain the response and branch name; they do not imply a push succeeded unless
 the agent actually reports a verified push. There is no automatic merge.
 
@@ -147,6 +153,11 @@ writes occur during scaffold tests or setup.
 - A provider/tool/comment failure emits `failed`, persists the session, and does
   not automatically replay. A follow-up API message can continue the conversation.
   A crash may leave the persisted status `running`; inspect before continuing.
+- Lock acquisition waits until the current owner finishes or the waiting request
+  is cancelled/times out. A crashed worker leaves `workspace.lock` behind; the lock
+  is never expired automatically. Confirm the owning worker and all its tools have
+  stopped before removing that directory. `owner.json` records the PID and time;
+  a PID alone is not proof of liveness across containers.
 - Uncommitted changes block another session from switching branches. Continue the
   owning session to commit or resolve them. No automatic reset or stash occurs.
 - A completed result is persisted before posting an issue comment. A failed
@@ -175,3 +186,12 @@ mock agent/GitHub dependencies plus local Git, without live model or GitHub call
 API references: [OpenCode SDK](https://opencode.ai/docs/sdk/) and
 [GitHub webhook signature validation](https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries).
 Cantelop calls are checked against the installed `@cantelop/sdk@0.8.0` types.
+
+### Upgrading from the coordinator scaffold
+
+The original `agent-coordinator` actor must be idle before deploying this version:
+its old code does not acquire the workspace lock. New requests do not use it.
+Existing stored conversation IDs/models remain usable through their new per-ID
+actors in the same workspace. Event subscriptions must now include `sessionId`;
+there is no global event stream. Issue-rule updates return their own session ID
+and event URL so their completion can be observed.

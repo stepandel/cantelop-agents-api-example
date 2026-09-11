@@ -15,7 +15,7 @@ function harness() {
   return { commands, opens, request: (path: string, body: unknown, headers: Record<string, string> = { authorization: "Bearer api-secret" }, method = "POST") => router.handle(new Request(`https://example.com${path}`, { method, headers, body: JSON.stringify(body) })) };
 }
 const model = { providerID: "provider", modelID: "requested-model" };
-test("new session requires a model and authentication; opens only the shared actor", async () => {
+test("new session requires a model and authentication; opens a distinct actor in the shared workspace", async () => {
   const h = harness();
   const spec = { repository: "owner/repo", prompt: "Fix tests", model };
   assert.equal((await h.request("/sessions", spec, {})).status, 401);
@@ -23,7 +23,13 @@ test("new session requires a model and authentication; opens only the shared act
   assert.equal((await h.request("/sessions", spec)).status, 202);
   assert.equal(h.commands.length, 1);
   assert.deepEqual(h.commands[0]?.type === "create" && h.commands[0].spec.model, model);
-  assert.deepEqual(h.opens, [{ id: "agent-coordinator", workspaceSlug: "agents", keepAliveSeconds: 3600 }]);
+  const first = h.commands[0];
+  assert.ok(first?.type === "create");
+  assert.deepEqual(h.opens[0], { id: first.spec.sessionId, workspaceSlug: "agents", keepAliveSeconds: 3600 });
+  await h.request("/sessions", spec);
+  assert.notDeepEqual(h.opens[0], h.opens[1]);
+  await h.request("/sessions/messages", { sessionId: first.spec.sessionId, prompt: "Continue" });
+  assert.deepEqual(h.opens[0], h.opens[2]);
 });
 test("rejects unlisted repositories and unsafe session IDs", async () => {
   const h = harness();
@@ -47,4 +53,21 @@ test("verifies raw webhook signatures, ignores other actions and untrusted autho
 });
 test("rejects oversized bodies", async () => {
   assert.equal((await harness().request("/sessions", { prompt: "x".repeat(1000001) })).status, 413);
+});
+test("events require a session ID and route to its actor", async () => {
+  const h = harness();
+  assert.equal((await h.request("/events", undefined, { authorization: "Bearer api-secret" }, "GET")).status, 400);
+  assert.equal((await h.request("/events?sessionId=session-one", undefined, { authorization: "Bearer api-secret" }, "GET")).status, 200);
+  assert.deepEqual(h.opens, [{ id: "session-one", workspaceSlug: "agents", keepAliveSeconds: 3600 }]);
+});
+test("issue redeliveries route to the same issue actor", async () => {
+  const h = harness();
+  const payload = { action: "opened", repository: { full_name: "owner/repo" }, issue: { number: 3, title: "Bug", body: null, author_association: "OWNER" } };
+  const headers = { "x-github-event": "issues", "x-github-delivery": "first", "x-hub-signature-256": `sha256=${createHmac("sha256", "webhook-secret").update(JSON.stringify(payload)).digest("hex")}` };
+  const first = await (await h.request("/webhooks/github", payload, headers)).json() as { sessionId: string; events: string };
+  const second = await (await h.request("/webhooks/github", payload, { ...headers, "x-github-delivery": "second" })).json() as { sessionId: string };
+  assert.equal(first.sessionId, second.sessionId);
+  assert.ok(first.sessionId.startsWith("issue-"));
+  assert.equal(first.events, `/events?sessionId=${first.sessionId}`);
+  assert.deepEqual(h.opens[0], h.opens[1]);
 });

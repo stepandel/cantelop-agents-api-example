@@ -3,8 +3,8 @@ import type { Command, Event } from "./contracts.js";
 import { handle } from "./worker.js";
 
 export default defineSessionBehaviour<Command, Event>(async ({ message, env, signal, output }) => {
-  // Await the entire turn inside receive: all logical sessions share this actor's queue.
-  // Never put these mutations into overlapping background activities.
+  // Each conversation has its own actor. The worker locks the shared workspace
+  // across the complete turn, including checkout, tools, and durable state updates.
   const turnSignal = AbortSignal.any([signal, AbortSignal.timeout(30 * 60 * 1000)]);
   let event: Event;
   try {

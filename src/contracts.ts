@@ -36,3 +36,8 @@ export function repository(value: unknown, allowlist: string | undefined): strin
   if (!(allowlist ?? "").split(",").map(v => v.trim().toLowerCase()).includes(repo)) throw new TypeError("Repository is not enabled");
   return repo;
 }
+
+export async function issueSessionId(repo: string, number: number): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`issue:${repo}:${number}`));
+  return `issue-${Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, "0")).join("").slice(0, 24)}`;
+}

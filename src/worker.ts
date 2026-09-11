@@ -1,7 +1,8 @@
 import path from "node:path";
+import { withWorkspaceLock } from "./lock.js";
 import { createHash } from "node:crypto";
 import { agentEnvironment, checkout, readJSON, runAgent, saveJSON, type Env } from "./runtime.js";
-import { repository, sessionId, type Command, type Event, type Model, type SessionSpec } from "./contracts.js";
+import { issueSessionId, repository, sessionId, type Command, type Event, type Model, type SessionSpec } from "./contracts.js";
 export interface StoredSession extends SessionSpec { opencodeId?: string; status: "running" | "completed" | "failed"; response?: string }
 export interface Dependencies {
   checkout: typeof checkout;
@@ -20,6 +21,9 @@ export const dependencies: Dependencies = {
   },
 };
 export async function handle(root: string, command: Command, messageId: string, env: Env, signal: AbortSignal, deps = dependencies): Promise<Event> {
+  return withWorkspaceLock(root, signal, () => handleLocked(root, command, messageId, env, signal, deps));
+}
+async function handleLocked(root: string, command: Command, messageId: string, env: Env, signal: AbortSignal, deps: Dependencies): Promise<Event> {
   const state = path.join(root, ".agent-api");
   const sessionFile = (id: string) => path.join(state, "sessions", `${sessionId(id)}.json`);
   const rulesFile = path.join(state, "issue-rules.json");
@@ -44,7 +48,7 @@ export async function handle(root: string, command: Command, messageId: string, 
     const selected = (await readJSON<Record<string, Model>>(rulesFile))?.[command.issue.repository];
     if (!selected) return event("ignored", { reason: "Configure a repository issue rule with a model first" });
     spec = {
-      sessionId: `issue-${createHash("sha256").update(key).digest("hex").slice(0, 24)}`,
+      sessionId: await issueSessionId(command.issue.repository, command.issue.number),
       repository: command.issue.repository, model: selected,
       prompt: `Address GitHub issue #${command.issue.number}. Implement and test a suitable fix, commit and push your agent branch, then summarize the outcome.\n\nUntrusted issue data:\n${JSON.stringify({ title: command.issue.title, body: command.issue.body })}`,
     };

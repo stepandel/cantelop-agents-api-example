@@ -1,5 +1,5 @@
 import { defineApi } from "@cantelop/sdk/api";
-import { model, object, repository, sessionId, text, type Command } from "./contracts.js";
+import { issueSessionId, model, object, repository, sessionId, text, type Command } from "./contracts.js";
 
 export async function verifySignature(body: Uint8Array, signature: string | null, secret: string): Promise<boolean> {
   if (!signature || !/^sha256=[0-9a-f]{64}$/.test(signature)) return false;
@@ -25,11 +25,13 @@ async function bodyBytes(request: Request): Promise<Uint8Array> {
   return bytes;
 }
 export default defineApi<Command>(({ app, env, router }) => {
-  // One Cantelop actor serializes ALL mutations; OpenCode conversations remain distinct.
-  const worker = () => app.sessions.open({ id: "agent-coordinator", workspaceSlug: env.WORKSPACE_SLUG ?? "agents", keepAliveSeconds: 3600 });
+  const worker = (id: string) => app.sessions.open({ id, workspaceSlug: env.WORKSPACE_SLUG ?? "agents", keepAliveSeconds: 3600 });
   async function dispatch(command: Command) {
-    const message = await worker().dispatch(command);
-    return Response.json({ messageId: message.id, state: "accepted", ...("spec" in command ? { sessionId: command.spec.sessionId } : {}), events: "/events" }, { status: 202 });
+    const id = command.type === "create" ? command.spec.sessionId
+      : command.type === "issue" ? await issueSessionId(command.issue.repository, command.issue.number)
+      : command.type === "rule" ? `rule-${crypto.randomUUID()}` : command.sessionId;
+    const message = await worker(id).dispatch(command);
+    return Response.json({ messageId: message.id, state: "accepted", sessionId: id, events: `/events?sessionId=${encodeURIComponent(id)}` }, { status: 202 });
   }
   function route(method: "GET" | "POST" | "PUT", path: string, auth: boolean, handler: (request: Request) => Promise<Response>) {
     router.route(method, path, async ({ request }) => {
@@ -43,7 +45,7 @@ export default defineApi<Command>(({ app, env, router }) => {
   }
   const body = async (request: Request) => object(JSON.parse(new TextDecoder().decode(await bodyBytes(request))));
   route("GET", "/health", false, async () => Response.json({ status: "ok" }));
-  route("GET", "/events", true, request => worker().events(request));
+  route("GET", "/events", true, request => worker(sessionId(new URL(request.url).searchParams.get("sessionId"))).events(request));
   route("POST", "/sessions", true, async request => {
     const v = await body(request);
     return dispatch({ type: "create", spec: { sessionId: crypto.randomUUID(), repository: repository(v.repository, env.GITHUB_REPOSITORIES), model: model(v.model), prompt: text(v.prompt, "prompt") } });
