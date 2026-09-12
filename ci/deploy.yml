@@ -1,0 +1,69 @@
+name: Deploy
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck and test
+        run: npm run check
+
+      - name: Install the Cantelop CLI
+        run: |
+          curl -fsSL https://console.cantelop.dev/install.sh | CANTELOP_NO_MODIFY_PATH=1 sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Validate the deployment build
+        run: npm run build
+
+  deploy:
+    name: Deploy to Cantelop
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    needs: check
+    runs-on: ubuntu-latest
+    concurrency:
+      group: cantelop-deploy
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Install the Cantelop CLI
+        run: |
+          curl -fsSL https://console.cantelop.dev/install.sh | CANTELOP_NO_MODIFY_PATH=1 sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Restore Cantelop CLI credentials
+        env:
+          CANTELOP_CLI_CREDENTIALS: ${{ secrets.CANTELOP_CLI_CREDENTIALS }}
+        run: |
+          install -m 600 /dev/null "$RUNNER_TEMP/cantelop-credentials.json"
+          printf '%s' "$CANTELOP_CLI_CREDENTIALS" > "$RUNNER_TEMP/cantelop-credentials.json"
+
+      - name: Deploy
+        env:
+          CANTELOP_CONFIG: ${{ runner.temp }}/cantelop-credentials.json
+        run: cantelop deploy
