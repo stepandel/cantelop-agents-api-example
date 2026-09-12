@@ -292,37 +292,6 @@ Choose your Cantelop app name in `cantelop.json`. Production environment/secrets
 must be configured on that app; local `.env` is not deployed. The test suite uses
 mock agent/GitHub dependencies plus local Git, without live model or GitHub calls.
 
-### Continuous deployment
-
-`ci/deploy.yml` is a GitHub Actions workflow that runs `npm run check` and a
-dry-run deployment build on every pull request and every push to `master`.
-Pushes to `master` additionally deploy to the Cantelop app named in
-`cantelop.json`. Deployments are serialized so concurrent merges cannot race
-the app upload lock.
-
-Activate it once by moving it into the workflows directory. Creating files
-under `.github/workflows/` requires credentials permitted to manage Actions
-workflows, so perform this step with your own account:
-
-```sh
-mkdir -p .github/workflows
-git mv ci/deploy.yml .github/workflows/deploy.yml
-```
-
-One-time setup for the deploy job:
-
-1. Create the app and configure its production environment once, for example
-   with `cantelop deploy --create-app` and `npm run env:upload -- APP_ID`.
-2. Run `cantelop login` locally, then copy the credential file it writes
-   (`~/.config/cantelop/config.json`) into a GitHub Actions secret named
-   `CANTELOP_CLI_CREDENTIALS`. The workflow stores it at the path named by
-   `CANTELOP_CONFIG` with owner-only permissions; the credential is never
-   printed.
-
-The CLI refreshes the stored access token against the console when it expires.
-If the console rotates or revokes the refresh token, deployments start failing
-with a credential error; run `cantelop login` again and update the secret.
-
 API references: [OpenCode SDK](https://opencode.ai/docs/sdk/) and
 [GitHub webhook signature validation](https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries).
 Cantelop calls are checked against the installed `@cantelop/sdk@0.8.1` types.
