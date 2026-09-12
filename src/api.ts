@@ -1,5 +1,6 @@
 import { sessionDatabase, parseSessionQuery, type SessionDatabase } from "./session-db.js";
 import { turnStream } from "./turn-stream.js";
+import { ui } from "./ui.js";
 import { defineApi } from "@cantelop/sdk/api";
 import { issueSessionId, model, object, repository, sessionId, text, type Command } from "./contracts.js";
 
@@ -83,6 +84,9 @@ export const createApi = (databaseFactory = sessionDatabase) => defineApi<Comman
   }
   const body = async (request: Request) => object(JSON.parse(new TextDecoder().decode(await bodyBytes(request))));
   route("GET", "/health", false, async () => Response.json({ status: "ok" }));
+  // Static operator console; it holds no secrets and calls this same origin with the operator's token.
+  route("GET", "/", false, async () => new Response(ui, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff", "referrer-policy": "no-referrer",
+    "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'" } }));
   route("GET", "/events", true, request => worker(sessionId(new URL(request.url).searchParams.get("sessionId"))).events(request));
   route("GET", "/turns/events", true, async request => {
     if (request.headers.get("upgrade")) throw new TypeError("Turn streams require SSE");

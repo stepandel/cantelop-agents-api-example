@@ -118,3 +118,14 @@ for (const override of [false, true]) {
     assert.equal(h.runs[1]?.model, override ? model : fallback);
   });
 }
+
+test("model failure gives actionable UI feedback and persists safe diagnostics", async t => {
+  const h = await harness(t);
+  const { AgentError } = await import("../src/runtime.js");
+  h.deps.runAgent = async () => { throw new AgentError({ code: "opencode_failed", phase: "validate_model", stderrHints: [], reason: "model_not_found" }); };
+  const result = await h.run({ type: "create", spec: { sessionId: "bad-model", repository: "owner/repo", model: "moonshot/kimi-k3", prompt: "Hello" } }, "bad-model-1");
+  assert.equal(result.type, "failed");
+  assert.match((result.data as { error: string }).error, /Start a new session.*moonshotai\/kimi-k3/);
+  const stored = await h.run({ type: "inspect", sessionId: "bad-model" }, "inspect-1");
+  assert.equal((stored.data as { diagnostic: { reason: string } }).diagnostic.reason, "model_not_found");
+});
