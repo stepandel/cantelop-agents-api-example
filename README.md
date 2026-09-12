@@ -1,192 +1,287 @@
-# Cantelop + OpenCode agent API
+# Run a coding agent API on Cantelop
 
-A TypeScript scaffold with a Cantelop Edge API and an OpenCode worker. New
-API conversations require a model in the request. GitHub issues use
-`GITHUB_ISSUE_MODEL`, with optional per-repository overrides. GitHub access supports cloning, committing and pushing to
-configured repositories. A signed `issues.opened` webhook starts an agent run and
-posts its final summary to the issue.
+Deploy your own coding agent service on [Cantelop](https://cantelop.com), then use
+its web console or HTTP API to give an agent tasks in your GitHub repositories,
+stream its progress, and continue the same conversation across turns. You can
+also have it pick up newly opened GitHub issues and post a summary when it finishes.
 
-## Architecture
+This repository is an example alternative to the managed
+[OpenAI Agents API](https://developers.openai.com/api/docs/guides/agents-api/overview).
+Here, Cantelop runs the Edge API and durable Session workers, OpenCode runs the
+agent, and OpenRouter provides model access. It exposes its own HTTP endpoints
+and request format; it is not a drop-in replacement for the OpenAI API or SDK.
+You do not need an OpenAI API key for this implementation.
 
-All requests use **one Cantelop Workspace** (`WORKSPACE_SLUG`, default `agents`).
-Each API-created session gets a **distinct Cantelop Session actor**, using the API
-session UUID as its actor ID. Follow-ups and event streams address that same ID.
-Each actor owns a separate persisted OpenCode conversation.
+Follow the steps below to run locally, complete your first task, and deploy to
+Cantelop. GitHub webhooks and a searchable session database are optional.
 
-An atomic filesystem lock at `.agent-api/workspace.lock` serializes complete turns
-across actors sharing the workspace. It covers Git checkout, agent tools, receipts,
-and state updates, preventing one session from switching another's active branch.
-Issue deliveries use a deterministic actor ID per repository/issue; issue-rule
-updates use temporary actors and take the same workspace lock.
+## 1. Gather the prerequisites
 
-- `src/api.ts`: authentication, input validation, webhook verification, dispatch, SSE.
-- `src/ui.ts`: the single-page operator console served at `GET /`.
-- `src/session.ts`: per-session Cantelop worker entry point and turn scheduling.
-- `src/inbox.ts`: atomic durable message queue and turn outcomes.
-- `src/lock.ts`: cross-process workspace lock with cancellable waiting.
-- `src/worker.ts`: durable session models, issue rules, receipts and outcomes.
-- `src/runtime.ts`: authenticated Git, shared checkouts, OpenCode lifecycle.
-- `repositories/OWNER/REPO`: one shared clone per repository; `agent/SESSION_ID` branches.
-- `.agent-api/`: conversation mappings, results, webhook receipts and OpenCode data.
+You will need:
 
-OpenCode is started on loopback for each turn and stopped before the next turn.
-Its persisted conversation ID is reused. The selected model is explicitly passed
-to every prompt using the OpenCode SDK, because its session-create endpoint does
-not select a model. The OpenRouter key is supplied separately to the subprocess. OpenCode enables
-only OpenRouter and every prompt explicitly uses `providerID: "openrouter"`.
+- **Node.js 22.12 or newer** and npm.
+- **A Cantelop account and CLI.** Follow the CLI installation instructions in the
+  [Cantelop documentation](https://console.cantelop.dev/docs), then run `cantelop login`.
+- **Docker**, installed and running, for the local container and deployment image builds.
+- **An OpenRouter API key** with access and sufficient credit for the model you choose.
+- **A GitHub repository and fine-grained personal access token** scoped to the repositories
+  you want the agent to work on, with **Contents: read and write** and **Issues: read and write**.
+- **curl and jq** if you want to follow the command-line API examples. The web console
+  does not require them.
 
-## Setup
+This example is intended for **one trusted operator**. The API token gives access
+to every configured repository and session. Agent tools run without approval
+prompts and can edit files, execute commands, commit, push, and use the GitHub token.
+Scope that token to the repositories you intend to expose. The repository allowlist
+checks API requests; it does not isolate agent shell commands or the shared filesystem.
 
-Prerequisites: Node 22.12+, the Cantelop CLI, Docker for image builds, and an
-OpenRouter account. For non-container local development, install
-`opencode-ai@1.18.30` globally. The Dockerfile already installs that version.
+## 2. Install and configure the project
 
 ```sh
-npm install
+git clone https://github.com/stepandel/cantelop-agents-api-example.git
+cd cantelop-agents-api-example
+npm ci
 cp .env.example .env
-# Edit .env with real secrets and repository names.
+```
+
+Edit `.env` with your own values. Keep this file private; it is already ignored by Git.
+
+| Setting | What to put in it |
+| --- | --- |
+| `API_TOKEN` | A long random secret you choose. Use it to sign in to the console and authenticate API requests. |
+| `GITHUB_TOKEN` | Your fine-grained GitHub token. |
+| `GITHUB_WEBHOOK_SECRET` | A separate random secret. Required by the app configuration even if you have not enabled webhooks yet. |
+| `GITHUB_REPOSITORIES` | A comma-separated list of allowed repositories, such as `your-name/your-repo,your-name/another-repo`. |
+| `OPENROUTER_API_KEY` | Your OpenRouter API key. |
+| `WORKSPACE_SLUG` | Keep `agents` for the initial setup. This identifies the shared durable workspace. |
+| `GITHUB_ISSUE_MODEL` | The OpenRouter model ID for GitHub issue tasks. The included default is `moonshotai/kimi-k3`; change it to a model available to you. |
+| `SESSION_DATABASE_URL` | Leave blank initially. Set it when enabling the optional session index. |
+| `SESSION_DATABASE_AUTH_TOKEN` | Leave blank initially. Supply your database token when enabling the session index. |
+
+You can generate a secret with the following command. Run it separately for
+`API_TOKEN` and `GITHUB_WEBHOOK_SECRET`, and copy each result into `.env`:
+
+```sh
+node -e 'console.log(require("node:crypto").randomBytes(32).toString("hex"))'
+```
+
+For API-created sessions, you choose an **OpenRouter model ID** when starting each
+session, for example `anthropic/claude-sonnet-4.5` if available to your account.
+`GITHUB_ISSUE_MODEL` only supplies the default for issue tasks. Model IDs are strings,
+not provider/model objects. The runtime checks the exact ID against OpenCode's
+OpenRouter catalog and does not substitute another model. Follow-ups retain the
+session's original model; start a new session to change it.
+
+## 3. Start locally
+
+```sh
 npm run check
 cantelop dev --container
 ```
 
-Use a **fine-grained GitHub personal access token** scoped to the selected user's
-repositories, with Contents read/write and Issues read/write. Configure
-`GITHUB_REPOSITORIES` as a comma-separated allowlist such as
-`alice/app,alice/library`. Branch protection and token permissions still apply.
-Git authenticates through subprocess environment configuration; tokens are never
-embedded in clone URLs or written to Git config. The agent can also use
-`GITHUB_TOKEN` for GitHub REST API access.
+Keep that terminal running. The container installs the pinned OpenCode version
+(`1.18.30`) for you. If you choose to run `cantelop dev` without `--container`,
+install `opencode-ai@1.18.30` globally first and make sure Git is available locally.
 
-Set `OPENROUTER_API_KEY` from `.env.example`. Supply an OpenRouter model ID as
-a string, for example `"model": "anthropic/claude-sonnet-4.5"`. Individual provider
-keys and provider selection are not supported. An unavailable model fails the turn;
-the scaffold never silently substitutes a different model.
-
-For Kimi K3, enter `moonshotai/kimi-k3` (including `ai` in the organization).
-The worker checks the exact ID against OpenCode's OpenRouter catalog before
-creating or prompting a conversation. If a session was created with a wrong ID,
-start a new session with the corrected model; follow-ups keep the original model.
-
-This is a **single trusted operator** scaffold. One API token grants access to all
-configured repositories and all session events. It does not implement per-user
-OAuth, tenant isolation, or GitHub App installation-token refresh. For repositories
-belonging to multiple unrelated users, add those boundaries before sharing access.
-The repository allowlist validates API requests, but is not a sandbox for arbitrary
-agent shell commands; scope the GitHub token accordingly.
-
-## Web console
-
-`GET /` serves a small single-page console for operating the API from a
-browser. Open `http://localhost:8787/` during `cantelop dev` or your deployed
-app URL, paste the `API_TOKEN` in **Settings**, then start a session with a
-repository, an OpenRouter model ID and a prompt. The console streams the turn
-(`status`, `text.delta`, `tool.status`, `completed` / `failed`), supports
-follow-up prompts with separate **Queue** and **Steer** actions, a **Stop** button
-for the active turn, **Inspect** for the stored session and queue snapshot, opening an
-existing session by ID (for example an `issue-…` session), and setting a
-per-repository GitHub issue model rule.
-
-The sidebar lists every session in the shared session index (`GET /sessions`,
-see [Querying sessions from clients](#querying-sessions-from-clients)), including
-sessions started by the GitHub issue webhook, which show an issue badge and the
-issue title. Filter by status, refresh, or load older pages; the list also
-refreshes when a turn finishes and every 30 seconds while the tab is visible.
-Opening a listed session loads its stored prompt, response and diagnostics from
-the index. A turn started elsewhere cannot be streamed into this tab, so the
-console polls the index until it finishes. Without `SESSION_DATABASE_URL` the
-sidebar shows only sessions this browser started or opened by ID.
-
-The page embeds no secrets and requires no authentication itself; every API
-call it makes carries the token you entered as a `Bearer` header to the same
-origin. Token, defaults and the transcripts streamed in this browser live in its
-`localStorage` only (use **Forget token** to clear it; **Forget** on a session
-drops only the local transcript). If the tab closes mid-turn, reopen the session
-and use **Reconnect** or **Inspect**; disconnecting never cancels the agent.
-
-## API
-
-All routes except `/`, `/health` and `/webhooks/github` require
-`Authorization: Bearer YOUR_API_TOKEN`. Commands return `202` after Cantelop
-accepts them, **not after the agent completes**. Connect to the session-specific
-`events` URL returned by dispatch and correlate output by `messageId`:
+In another terminal, check that the API is reachable:
 
 ```sh
-curl -N "http://localhost:8787/events?sessionId=SESSION_ID" \
+curl -fsS http://localhost:8787/health
+```
+
+You should see `{"status":"ok"}`. This checks the API process; your first agent
+task will verify GitHub access and model credentials.
+
+## 4. Run your first task in the web console
+
+1. Open [http://localhost:8787/](http://localhost:8787/).
+2. Open **Settings**, enter the `API_TOKEN` from `.env`, and save it.
+3. Start a session with a repository from `GITHUB_REPOSITORIES`, an OpenRouter model
+   ID available to you, and a prompt such as:
+
+   > Explain this repository's architecture and how to run its tests. Do not modify files, commit, or push.
+
+4. Watch the progress and wait for the final response. Keep the session ID so you
+   can reopen the conversation later.
+5. Send a follow-up using **Queue**, or use **Steer** to interrupt the current turn
+   and continue with new instructions. **Stop** cancels the active turn.
+
+When you are ready to have the agent make changes, ask it to implement a specific
+change, run the relevant tests, and commit and push its agent branch. Each session
+uses an `agent/SESSION_ID` branch. Review the resulting changes in GitHub; the
+example does not automatically create pull requests or merge changes. A completed
+turn alone does not prove a push succeeded—check the agent's response and the branch.
+
+Use **Inspect** for the saved session and queue state. If you close the tab mid-turn,
+reopen the session and use **Reconnect** or **Inspect**; disconnecting does not stop
+the agent. The console stores your token, defaults, and locally streamed transcripts
+in browser `localStorage`. **Forget token** clears the token; **Forget** on a session
+removes only its local transcript.
+
+Without a database, the sidebar shows sessions this browser started or opened by ID.
+Enable the [optional session index](#optional-list-and-query-sessions) to browse
+sessions across browsers and see tasks started by GitHub webhooks.
+
+## 5. Deploy to Cantelop
+
+Choose your own app slug and set the `app` field in `cantelop.json` to that value.
+The manifest already points to the Edge API, Session worker, and Dockerfile;
+you do not need to create another project with `cantelop init`.
+
+Create the app using the same slug, or use an existing app you own:
+
+```sh
+cantelop login
+cantelop app create -slug YOUR_APP_SLUG
+cantelop app list
+```
+
+Copy the app ID (`app_…`) for that app. Upload the values you configured in `.env`:
+
+```sh
+npm run env:upload -- APP_ID
+```
+
+Replace `APP_ID` with the actual ID, not the app slug. The script sends secrets
+through stdin to `cantelop app secret set` and ordinary variables to `cantelop app env set`.
+It only uploads settings declared in `cantelop.json`, does not print their values,
+and skips blank entries, preserving existing remote values. Missing required
+local settings stop the upload before any changes. Uploads are sequential;
+if one fails, correct the problem and rerun the command.
+
+Validate and deploy:
+
+```sh
+cantelop doctor
+cantelop deploy --dry-run
+cantelop deploy
+```
+
+Local `.env` configuration is not automatically deployed by this guide's workflow;
+repeat the upload step when changing production settings. Use the app URL reported
+by Cantelop to open the console and repeat the first-task check with your production
+`API_TOKEN`. Set that URL as `BASE_URL` when using the API examples below.
+
+## Use the HTTP API
+
+The console and your own client use the same endpoints. All routes except `/`,
+`/health`, and the signed `/webhooks/github` endpoint require an
+`Authorization: Bearer …` header.
+
+The examples below use curl and jq. Set these variables in your terminal; editing
+`.env` does not automatically export variables into your shell:
+
+```sh
+export BASE_URL='http://localhost:8787'
+export API_TOKEN='YOUR_API_TOKEN'
+export REPOSITORY='your-name/your-repo'
+export MODEL='anthropic/claude-sonnet-4.5'
+```
+
+For production, replace `BASE_URL` with your deployed app URL, without a trailing
+slash. Set `REPOSITORY` to an allowed repository and `MODEL` to a model available
+to your OpenRouter account.
+
+### Create a session and stream the response
+
+```sh
+request=$(curl -fsS "$BASE_URL/sessions" \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "$(jq -n --arg repository "$REPOSITORY" --arg model "$MODEL" \
+    '{repository: $repository, model: $model, prompt: "Explain the architecture. Do not modify files, commit, or push."}')")
+
+printf '%s\n' "$request" | jq .
+export SESSION_ID=$(printf '%s' "$request" | jq -r .sessionId)
+curl -N --fail-with-body "$BASE_URL$(printf '%s' "$request" | jq -r .stream)" \
   -H "Authorization: Bearer $API_TOKEN"
 ```
 
-Create a new session (replace the example model with one available to you):
+The creation request returns HTTP `202` with `sessionId`, `messageId`, `state`,
+`stream`, and `events`. **202 means dispatch succeeded, not that the task finished.**
+The `stream` URL follows that one request and closes on its terminal event.
+The `events` URL is the session-wide stream; correlate its output by `messageId`.
+Save `SESSION_ID` for follow-ups. Repeating `POST /sessions` creates a new conversation.
+
+### Continue, steer, stop, or inspect a session
+
+Queue a follow-up in the same conversation without resupplying the model:
 
 ```sh
-curl http://localhost:8787/sessions \
+request=$(curl -fsS "$BASE_URL/sessions/messages" \
   -H "Authorization: Bearer $API_TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"repository":"alice/app","model":"anthropic/claude-sonnet-4.5","prompt":"Fix the failing tests, commit and push the agent branch."}'
+  -d "$(jq -n --arg id "$SESSION_ID" \
+    '{sessionId: $id, mode: "queue", prompt: "Which tests cover the API routes?"}')")
+
+curl -N --fail-with-body "$BASE_URL$(printf '%s' "$request" | jq -r .stream)" \
+  -H "Authorization: Bearer $API_TOKEN"
 ```
 
-The response includes `sessionId`, `messageId`, and `events`. Follow up without
-resupplying the model:
+Use `"mode": "steer"` to interrupt the active turn and run the new instruction ahead
+of ordinary queued messages. Steering waits for runtime cleanup, then continues
+the saved conversation. The interrupted request ends with `failed` and
+`data.code: "turn_steered"`; edits and external effects already performed remain.
+If idle, either mode starts immediately.
+
+To stop the active turn or inspect the saved state:
 
 ```sh
-curl http://localhost:8787/sessions/messages \
+curl -fsS "$BASE_URL/sessions/cancel" \
   -H "Authorization: Bearer $API_TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"sessionId":"SESSION_ID","prompt":"Add a regression test and push the update."}'
-```
+  -d "$(jq -n --arg id "$SESSION_ID" '{sessionId: $id}')"
 
-Follow-ups accept `"mode": "queue"` (the default) or `"mode": "steer"`:
-
-```sh
-curl http://localhost:8787/sessions/messages \
+curl -fsS "$BASE_URL/sessions/inspect" \
   -H "Authorization: Bearer $API_TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"sessionId":"SESSION_ID","mode":"steer","prompt":"Focus on the API tests first."}'
+  -d "$(jq -n --arg id "$SESSION_ID" '{sessionId: $id}')"
 ```
 
-Queue mode runs messages in arrival order after the active turn. Steering saves
-the new message, interrupts the active turn, waits for runtime cleanup, then runs
-it ahead of ordinary queued messages using the same persisted OpenCode conversation
-and model. Steering messages retain arrival order among themselves. If idle, either
-mode starts immediately. Initial session creation is allowed to save its session
-before interruption. Steering is interrupt-and-continue; it does not inject text
-into a model response already being generated. The interrupted request terminates
-with `failed` and `data.code: "turn_steered"`; edits and external side effects already
-performed remain. Each queued/steering request has its own `messageId` and stream.
-A failed turn does not discard the remaining queue. An interrupted issue run does
-not post its completion comment.
+Both return `202` and their own `stream` URL; subscribe as above to see the result.
+Cancellation emits `cancelled`, with `data.cancelled` indicating whether an active
+turn was interrupted. Cleanup continues asynchronously. Queued messages remain
+saved and resume when another work message is dispatched.
 
-Stop the active turn without discarding queued messages:
+Inspection emits `session` with the stored model, OpenCode conversation ID,
+prompt, status, latest response, and a `messages` array of queued/running/finished
+requests. Unknown sessions return only that array. Inspection does not wait for
+the workspace lock and works without a database.
 
-```sh
-curl http://localhost:8787/sessions/cancel \
-  -H "Authorization: Bearer $API_TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"sessionId":"SESSION_ID"}'
-```
+### Handle streaming events
 
-The cancel request emits a terminal `cancelled` event with
-`data.cancelled: true` when it requested cancellation, or `false` when the
-session was already idle. Agent cleanup continues asynchronously. Pending queued
-messages remain saved and resume when another work message is dispatched.
+Each SSE frame has a replay `id`, a named `event`, and a JSON `data` payload
+containing `type`, `messageId`, optional `sessionId`, and event-specific `data`.
+Platform sandbox IDs and transport envelopes are omitted on the turn endpoint.
 
-To retrieve durable state after reconnecting, dispatch an inspection request:
+| Event | Client behavior |
+| --- | --- |
+| `queued` | Keep waiting; the message is durably queued (`data.mode`). |
+| `started` | Mark the turn active. |
+| `status` | Show `data.phase`: waiting for workspace, checkout, or agent startup. |
+| `text.delta` | Append `data.text` to the text block identified by `data.partId`. |
+| `text.replace` | Replace that block with `data.text` if OpenCode revises a snapshot. |
+| `tool.status` | Show the tool name and pending/running/completed/error state. |
+| `completed` | Use `data.response` as the authoritative final answer, not an additional delta. |
+| `cancelled` | The stop request was handled; check `data.cancelled` to see whether an active turn was interrupted. |
+| `failed` | Show the safe error/diagnostic; stop waiting. |
 
-```sh
-curl http://localhost:8787/sessions/inspect \
-  -H "Authorization: Bearer $API_TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"sessionId":"SESSION_ID"}'
-```
+`ignored`, `configured`, and inspection `session` events also terminate their
+request streams. Tool arguments/output, raw tool errors, and reasoning are not
+forwarded. Assistant text can include intermediate explanations across multiple
+blocks; keep blocks separate rather than concatenating all text into a final answer.
 
-It returns `202`; the correlated `session` event contains the stored model,
-OpenCode ID, prompt, status and latest response. Its `messages` array includes
-queued/running/finished message IDs, modes and terminal results; unknown sessions
-return only that array.
-Inspection reads an atomic saved snapshot without waiting for active work. Completion events
-contain the response and branch name; they do not imply a push succeeded unless
-the agent actually reports a verified push. There is no automatic merge.
+On disconnect, reconnect to the same URL with `Last-Event-ID: <last processed id>`;
+use the IDs for deduplication. Replay availability follows Cantelop's retention
+policy. Disconnecting only closes the subscription—it does not cancel the agent.
+Close browser EventSource clients on terminal events to prevent automatic
+reconnection. Fetch streaming is convenient for clients using Bearer headers.
+An EOF without a terminal event is a transport interruption, not successful work.
+The original `/events` endpoint remains an unmodified session-wide stream.
 
-## GitHub issue webhook
+## Optional: start tasks from GitHub issues
+
+Deploy the app first so GitHub can reach its webhook endpoint.
 
 GitHub does not include an LLM model in issue events. `GITHUB_ISSUE_MODEL` defaults
 to `moonshotai/kimi-k3` in `cantelop.json`. Set it in `.env` locally and
@@ -196,10 +291,10 @@ Optionally override the default for one repository **through the API**; wait for
 its `configured` event:
 
 ```sh
-curl -X PUT http://localhost:8787/github/issue-rules \
+curl -X PUT "$BASE_URL/github/issue-rules" \
   -H "Authorization: Bearer $API_TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"repository":"alice/app","model":"anthropic/claude-sonnet-4.5"}'
+  -d '{"repository":"your-name/your-repo","model":"anthropic/claude-sonnet-4.5"}'
 ```
 
 In the repository's Settings → Webhooks, add:
@@ -217,10 +312,126 @@ agent. Configure a model and redeliver the webhook to process it.
 
 The worker asks OpenCode to implement, test, commit and push a fix on its agent
 branch, then posts a summary comment on the issue. Updating the default or a rule affects future
-issue sessions; existing sessions retain their original model. No live GitHub
-writes occur during scaffold tests or setup.
+issue sessions; existing sessions retain their original model. Creating a qualifying issue after enabling this webhook can trigger commits, pushes,
+and an issue comment.
 
-## Application logs
+## Optional: list and query sessions
+
+An optional shared libSQL database (for example, Turso) indexes session snapshots
+for direct HTTP reads from the Edge API. Configure the **same** database URL,
+auth token and `WORKSPACE_SLUG` for the API, workers and setup command:
+
+```dotenv
+SESSION_DATABASE_URL=libsql://YOUR-DATABASE.turso.io
+SESSION_DATABASE_AUTH_TOKEN=YOUR-DATABASE-TOKEN
+```
+
+The implementation uses the HTTP-compatible [`@libsql/client/web` client](https://docs.turso.tech/sdk/http/quickstart),
+so the database must be reachable over the network from both runtimes. A local
+`file:` URL cannot be used by the Edge API. Each workspace has a separate index;
+use a dedicated database per app, or distinct workspace slugs if sharing one.
+Database credentials are excluded from the agent subprocess environment.
+
+Create a database with your provider, set these variables in `.env`, then run:
+
+```sh
+npm run db:setup
+```
+
+This idempotently creates the table and indexes. Upload the two variables using
+`npm run env:upload -- APP_ID` and deploy as usual. No database is provisioned or
+deployed automatically. Without `SESSION_DATABASE_URL`, existing POST/SSE flows
+continue to work and the new GET routes return `503`.
+
+List session summaries (including API-created and GitHub issue sessions):
+
+```sh
+curl -G "$BASE_URL/sessions" \
+  -H "Authorization: Bearer $API_TOKEN" \
+  --data-urlencode 'repository=your-name/your-repo' \
+  --data-urlencode 'status=completed' \
+  --data-urlencode 'limit=20'
+```
+
+The response is `{ "sessions": [...], "nextCursor": "..." }`. Each summary contains
+`sessionId`, `repository`, `model`, `status`, `promptPreview` (up to 200 characters),
+`createdAt`, and `updatedAt`. Results sort by creation time descending, then session
+ID descending. `repository` and `status` are optional; status is `running`,
+`completed`, or `failed`. `limit` defaults to 50 and must be between 1 and 100.
+Pass `nextCursor` as the URL-encoded `cursor` parameter with the same filters to
+continue; `null` means no more results. Pagination is a live view, so status-filtered
+results can change as turns finish.
+
+Fetch the complete indexed snapshot, including the latest prompt, response,
+OpenCode conversation ID and safe failure diagnostics:
+
+```sh
+curl -G "$BASE_URL/sessions/inspect" \
+  -H "Authorization: Bearer $API_TOKEN" \
+  --data-urlencode 'sessionId=SESSION_ID'
+```
+
+This returns `200` with `{ "session": {...} }`, or `404` for an ID not yet indexed.
+Both GET routes require the existing operator Bearer token, disable response
+caching, and return `400` for invalid queries or `503` when the database is
+unconfigured/unavailable. No actor dispatch or SSE subscription is needed.
+The existing `POST /sessions/inspect` still reads the durable workspace snapshot.
+
+### Index timing, migration and recovery
+
+Workspace JSON snapshots remain the recovery source. The worker writes JSON
+first and then updates SQL at turn start, OpenCode conversation creation, completion
+and failure. A session first becomes queryable after it acquires the workspace
+lock and saves its running state; HTTP `202` does not imply it is already indexed.
+Follow-ups update the same row and preserve the creation time. Streaming deltas
+and per-turn history are not stored in the query index.
+
+To import existing sessions or repair stale SQL rows after a database outage,
+run the following **where the durable workspace is mounted**, with the same
+configuration and this project's dependencies installed:
+
+```sh
+npm run db:setup -- /workspace
+```
+
+Backfill acquires the existing workspace lock, reads `.agent-api/sessions/*.json`,
+and upserts them without running agents or reposting issue comments. It can be
+safely rerun; older snapshots cannot overwrite newer indexed updates. Legacy
+snapshots without timestamps use file modification time as an approximation and
+save it for subsequent runs.
+
+JSON and SQL are not one transaction. If SQL fails, the turn fails and the local
+snapshot remains inspectable; an index write failure before checkout prevents
+agent side effects, while a later failure cannot undo effects already performed.
+The database may continue to show the last successfully indexed status until
+backfill repairs it. Restore database connectivity and inspect the workspace
+before retrying agent work. Abrupt process termination can still leave a session
+marked `running`, as in the original receipt model.
+
+For a deployed workspace, you can run the same backfill remotely:
+
+```sh
+curl -X POST "$BASE_URL/sessions/reindex" \
+  -H "Authorization: Bearer $API_TOKEN"
+```
+
+Subscribe to the returned `stream` URL. A `configured` terminal event reports
+`data.indexedSessions`; `failed` indicates the index could not be repaired.
+This operation takes the workspace lock and only imports snapshots; it never
+calls the agent or GitHub. Initialize the database schema before dispatching it.
+
+## Troubleshooting
+
+| Symptom | What to check |
+| --- | --- |
+| `401 Unauthorized` | Use the `API_TOKEN` configured for this local or deployed app, not your Cantelop login token or GitHub token. |
+| `Repository is not enabled` | Match `OWNER/REPO` against `GITHUB_REPOSITORIES`; upload changed settings for production. |
+| Clone or push fails | Confirm the repository exists, the GitHub token includes it, and Contents permissions and branch protection permit the operation. |
+| Model, authentication, credit, or rate-limit failure | Read the safe diagnostic in the stream or Inspect. Check `OPENROUTER_API_KEY`, account credit, and the exact model ID. Start a new session if its model was wrong. |
+| A turn stays at “waiting for workspace” | Turns share one workspace and run serially. Check the active session; see recovery guidance below for a crashed worker's lock. |
+| `GET /sessions` returns `503` | Configure the optional database, run `npm run db:setup`, and verify connectivity from both API and workers. POST/SSE flows work without the database. |
+| A newly created session is missing from the index | Wait for it to acquire the workspace lock and save its running state. `202` does not mean it has been indexed yet. |
+| The stream disconnects without a final event | Reconnect with the last event ID or inspect the session. EOF alone does not mean success. |
 
 The trace UI receives structured JSON console logs with `component: agent-api`.
 API rejections log at warning level and unexpected failures at error level, with
@@ -231,7 +442,7 @@ include message IDs so they can be correlated across API and runtime traces.
 Logs omit credentials, signatures, prompts, issue titles/bodies and raw exception
 messages. Live text and tool progress remain in session events rather than logs.
 
-## Recovery and limits
+## Recovery and operating limits
 
 - Receipts deduplicate by repository + issue number, including redeliveries with
   different delivery IDs. API messages deduplicate by Cantelop message ID; a second
@@ -278,25 +489,55 @@ messages. Live text and tool progress remain in session events rather than logs.
   not a security boundary. API/webhook secrets are excluded from subprocess env;
   OpenRouter and GitHub credentials must be available to the agent.
 
-## Deployment and validation
+## How the example works
+
+All requests use **one Cantelop Workspace** (`WORKSPACE_SLUG`, default `agents`).
+Each API-created session gets a **distinct Cantelop Session actor**, using the API
+session UUID as its actor ID. Follow-ups and event streams address that same ID.
+Each actor owns a separate persisted OpenCode conversation.
+
+An atomic filesystem lock at `.agent-api/workspace.lock` serializes complete turns
+across actors sharing the workspace. It covers Git checkout, agent tools, receipts,
+and state updates, preventing one session from switching another's active branch.
+Issue deliveries use a deterministic actor ID per repository/issue; issue-rule
+updates use temporary actors and take the same workspace lock.
+
+- `src/api.ts`: authentication, input validation, webhook verification, dispatch, SSE.
+- `src/ui.ts`: the single-page operator console served at `GET /`.
+- `src/session.ts`: per-session Cantelop worker entry point and turn scheduling.
+- `src/inbox.ts`: atomic durable message queue and turn outcomes.
+- `src/lock.ts`: cross-process workspace lock with cancellable waiting.
+- `src/worker.ts`: durable session models, issue rules, receipts and outcomes.
+- `src/runtime.ts`: authenticated Git, shared checkouts, OpenCode lifecycle.
+- `repositories/OWNER/REPO`: one shared clone per repository; `agent/SESSION_ID` branches.
+- `.agent-api/`: conversation mappings, results, webhook receipts and OpenCode data.
+
+OpenCode is started on loopback for each turn and stopped before the next turn.
+Its persisted conversation ID is reused. The selected model is explicitly passed
+to every prompt using the OpenCode SDK, because its session-create endpoint does
+not select a model. The OpenRouter key is supplied separately to the subprocess. OpenCode enables
+only OpenRouter and every prompt explicitly uses `providerID: "openrouter"`.
+
+The runtime sets `permission: { "*": "allow", "question": "deny" }` for unattended
+work. The interactive question tool is disabled because there is no question-answer
+endpoint. Repository or agent-specific OpenCode configuration can override these
+global permissions. Container permissions, GitHub token scopes, and branch
+protections still apply.
+
+## Develop and validate changes
 
 ```sh
 npm run check
-cantelop doctor
 cantelop deploy --dry-run
-# Configure app environment/secrets with the Cantelop CLI, then:
-cantelop deploy
 ```
 
-Choose your Cantelop app name in `cantelop.json`. Production environment/secrets
-must be configured on that app; local `.env` is not deployed. The test suite uses
-mock agent/GitHub dependencies plus local Git, without live model or GitHub calls.
+`npm run check` runs TypeScript checking and the test suite. Tests use mocked
+agent/GitHub dependencies and local Git without live model or GitHub calls.
+The project pins `@cantelop/sdk@0.8.1` and `@opencode-ai/sdk@1.18.30`.
 
-API references: [OpenCode SDK](https://opencode.ai/docs/sdk/) and
-[GitHub webhook signature validation](https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries).
-Cantelop calls are checked against the installed `@cantelop/sdk@0.8.1` types.
+## Upgrading an older installation
 
-### Upgrading from the coordinator scaffold
+### Coordinator actors
 
 The original `agent-coordinator` actor must be idle before deploying this version:
 its old code does not acquire the workspace lock. New requests do not use it.
@@ -312,175 +553,3 @@ Session creation and issue-rule requests now take a model string, not a
 issue rules that stored that object before continuing them. API sessions take their model from
 the request; issues use a repository rule or `GITHUB_ISSUE_MODEL`. The provider is
 always OpenRouter.
-
-### Unattended tool permissions
-
-The runtime sets `permission: { "*": "allow", "question": "deny" }`. Tools run
-without OpenCode approval prompts, including Bash, edits, external-directory
-access and repeated tool calls. The interactive question tool is disabled because
-this API has no question-answer endpoint. This does not change the container's OS
-permissions, GitHub token scopes, or repository branch protections. Repository or
-agent-specific OpenCode configuration can override global permissions.
-
-### Upload local configuration
-
-After filling in `.env`, upload its configured values with:
-
-```sh
-npm run env:upload -- app_a2d19af8c6749be1aa98227bf4165513
-```
-
-The script uses `cantelop.json` to send secrets through stdin to `cantelop app
-secret set`, and ordinary variables to `cantelop app env set`. It does not print
-values, upload undeclared settings, or overwrite remote values with blank entries.
-Missing required local settings stop the upload before any changes. Uploads are
-sequential, not atomic; retry the command if a later setting fails.
-
-## Streaming a turn
-
-Session creation and follow-up responses now include a `stream` URL alongside
-`sessionId`, `messageId`, and the existing session-wide `events` URL. Subscribe to
-`stream` for a clean SSE feed that closes when that request emits its terminal
-result. API authentication is required on both endpoints.
-
-```sh
-request=$(curl -fsS https://cantelop-agents-api-example.cantelop.dev/sessions \
-  -H "Authorization: Bearer $API_TOKEN" -H 'Content-Type: application/json' \
-  -d '{"repository":"stepandel/cantelop","model":"anthropic/claude-sonnet-4.5","prompt":"Explain the architecture. Do not modify files or push."}')
-curl -N --fail-with-body "https://cantelop-agents-api-example.cantelop.dev$(printf '%s' "$request" | jq -r .stream)" \
-  -H "Authorization: Bearer $API_TOKEN"
-```
-
-Each SSE frame has a replay `id`, a named `event`, and a JSON `data` payload
-containing `type`, `messageId`, optional `sessionId`, and event-specific `data`.
-Platform sandbox IDs and transport envelopes are omitted on the turn endpoint.
-
-| Event | Client behavior |
-| --- | --- |
-| `queued` | Keep waiting; the message is durably queued (`data.mode`). |
-| `started` | Mark the turn active. |
-| `status` | Show `data.phase`: waiting for workspace, checkout, or agent startup. |
-| `text.delta` | Append `data.text` to the text block identified by `data.partId`. |
-| `text.replace` | Replace that block with `data.text` if OpenCode revises a snapshot. |
-| `tool.status` | Show the tool name and pending/running/completed/error state. |
-| `completed` | Use `data.response` as the authoritative final answer, not an additional delta. |
-| `cancelled` | The stop request was handled; check `data.cancelled` to see whether an active turn was interrupted. |
-| `failed` | Show the safe error/diagnostic; stop waiting. |
-
-`ignored`, `configured`, and inspection `session` events also terminate their
-request streams. Tool arguments/output, raw tool errors, and reasoning are not
-forwarded. Assistant text can include intermediate explanations across multiple
-blocks; keep blocks separate rather than concatenating all text into a final answer.
-
-On disconnect, reconnect to the same URL with `Last-Event-ID: <last processed id>`;
-use the IDs for deduplication. Replay availability follows Cantelop's retention
-policy. Disconnecting only closes the subscription—it does not cancel the agent.
-Close browser EventSource clients on terminal events to prevent automatic
-reconnection. Fetch streaming is convenient for clients using Bearer headers.
-An EOF without a terminal event is a transport interruption, not successful work.
-The original `/events` endpoint remains an unmodified session-wide stream.
-
-## Querying sessions from clients
-
-An optional shared libSQL database (for example, Turso) indexes session snapshots
-for direct HTTP reads from the Edge API. Configure the **same** database URL,
-auth token and `WORKSPACE_SLUG` for the API, workers and setup command:
-
-```dotenv
-SESSION_DATABASE_URL=libsql://YOUR-DATABASE.turso.io
-SESSION_DATABASE_AUTH_TOKEN=YOUR-DATABASE-TOKEN
-```
-
-The implementation uses the HTTP-compatible [`@libsql/client/web` client](https://docs.turso.tech/sdk/http/quickstart),
-so the database must be reachable over the network from both runtimes. A local
-`file:` URL cannot be used by the Edge API. Each workspace has a separate index;
-use a dedicated database per app, or distinct workspace slugs if sharing one.
-Database credentials are excluded from the agent subprocess environment.
-
-Create a database with your provider, set these variables in `.env`, then run:
-
-```sh
-npm run db:setup
-```
-
-This idempotently creates the table and indexes. Upload the two variables using
-`npm run env:upload -- APP_ID` and deploy as usual. No database is provisioned or
-deployed automatically. Without `SESSION_DATABASE_URL`, existing POST/SSE flows
-continue to work and the new GET routes return `503`.
-
-List session summaries (including API-created and GitHub issue sessions):
-
-```sh
-curl -G http://localhost:8787/sessions \
-  -H "Authorization: Bearer $API_TOKEN" \
-  --data-urlencode 'repository=alice/app' \
-  --data-urlencode 'status=completed' \
-  --data-urlencode 'limit=20'
-```
-
-The response is `{ "sessions": [...], "nextCursor": "..." }`. Each summary contains
-`sessionId`, `repository`, `model`, `status`, `promptPreview` (up to 200 characters),
-`createdAt`, and `updatedAt`. Results sort by creation time descending, then session
-ID descending. `repository` and `status` are optional; status is `running`,
-`completed`, or `failed`. `limit` defaults to 50 and must be between 1 and 100.
-Pass `nextCursor` as the URL-encoded `cursor` parameter with the same filters to
-continue; `null` means no more results. Pagination is a live view, so status-filtered
-results can change as turns finish.
-
-Fetch the complete indexed snapshot, including the latest prompt, response,
-OpenCode conversation ID and safe failure diagnostics:
-
-```sh
-curl -G http://localhost:8787/sessions/inspect \
-  -H "Authorization: Bearer $API_TOKEN" \
-  --data-urlencode 'sessionId=SESSION_ID'
-```
-
-This returns `200` with `{ "session": {...} }`, or `404` for an ID not yet indexed.
-Both GET routes require the existing operator Bearer token, disable response
-caching, and return `400` for invalid queries or `503` when the database is
-unconfigured/unavailable. No actor dispatch or SSE subscription is needed.
-The existing `POST /sessions/inspect` still reads the durable workspace snapshot.
-
-### Index timing, migration and recovery
-
-Workspace JSON snapshots remain the recovery source. The worker writes JSON
-first and then updates SQL at turn start, OpenCode conversation creation, completion
-and failure. A session first becomes queryable after it acquires the workspace
-lock and saves its running state; HTTP `202` does not imply it is already indexed.
-Follow-ups update the same row and preserve the creation time. Streaming deltas
-and per-turn history are not stored in the query index.
-
-To import existing sessions or repair stale SQL rows after a database outage,
-run the following **where the durable workspace is mounted**, with the same
-configuration and this project's dependencies installed:
-
-```sh
-npm run db:setup -- /workspace
-```
-
-Backfill acquires the existing workspace lock, reads `.agent-api/sessions/*.json`,
-and upserts them without running agents or reposting issue comments. It can be
-safely rerun; older snapshots cannot overwrite newer indexed updates. Legacy
-snapshots without timestamps use file modification time as an approximation and
-save it for subsequent runs.
-
-JSON and SQL are not one transaction. If SQL fails, the turn fails and the local
-snapshot remains inspectable; an index write failure before checkout prevents
-agent side effects, while a later failure cannot undo effects already performed.
-The database may continue to show the last successfully indexed status until
-backfill repairs it. Restore database connectivity and inspect the workspace
-before retrying agent work. Abrupt process termination can still leave a session
-marked `running`, as in the original receipt model.
-
-For a deployed workspace, you can run the same backfill remotely:
-
-```sh
-curl -X POST https://YOUR_APP.cantelop.dev/sessions/reindex \
-  -H "Authorization: Bearer $API_TOKEN"
-```
-
-Subscribe to the returned `stream` URL. A `configured` terminal event reports
-`data.indexedSessions`; `failed` indicates the index could not be repaired.
-This operation takes the workspace lock and only imports snapshots; it never
-calls the agent or GitHub. Initialize the database schema before dispatching it.
