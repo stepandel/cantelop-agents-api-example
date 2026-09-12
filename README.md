@@ -559,3 +559,21 @@ Session creation and issue-rule requests now take a model string, not a
 issue rules that stored that object before continuing them. API sessions take their model from
 the request; issues use a repository rule or `GITHUB_ISSUE_MODEL`. The provider is
 always OpenRouter.
+
+### Follow-up stream recovery
+
+The console saves a cursor per turn stream and uses the last observed session
+cursor when opening a new turn. Reconnect retains the turn cursor. If Cantelop
+returns `event_cursor_expired`, the console polls authenticated
+`GET /turns/inspect?sessionId=…&messageId=…` for that exact turn's saved status and
+terminal result. It never resubmits the prompt. Intermediate text lost to replay
+expiry cannot be reconstructed; the final response is restored when available.
+
+The optional session database now includes `agent_turns`. Run `npm run db:setup`
+before deploying this update to an existing installation. Each turn is indexed
+at admission, before waiting for the shared workspace, on status changes, and on
+completion. A follow-up waiting behind another session is shown as waiting for
+the shared workspace. Recovery requires the session database; without it, live
+streams still work but expired replay cannot be recovered through this endpoint.
+Older workers can recover their latest result from the existing session snapshot
+once it matches the requested message; their pre-lock waiting state is not indexed.

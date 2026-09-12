@@ -7,13 +7,14 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { createSessionRuntimeHandler } from "@cantelop/sdk/runtime";
 import { createBehaviour } from "../src/session.js";
+import type { SessionDatabase, StoredTurn } from "../src/session-db.js";
 import { Inbox } from "../src/inbox.js";
 import type { handle } from "../src/worker.js";
 
-async function harness(t: TestContext, run: typeof handle, root?: string) {
+async function harness(t: TestContext, run: typeof handle, root?: string, database?: SessionDatabase) {
   root ??= await mkdtemp(path.join(tmpdir(), "agent-inbox-"));
   const sandbox = `sbx-${"a".repeat(32)}`;
-  const server = createServer(createSessionRuntimeHandler(createBehaviour(run, 5000, root), { sandboxId: sandbox, executionTimeoutMs: 100 }));
+  const server = createServer(createSessionRuntimeHandler(createBehaviour(run, 5000, root, () => database), { sandboxId: sandbox, executionTimeoutMs: 100 }));
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   t.after(async () => { server.closeAllConnections(); server.close(); await rm(root!, { recursive: true, force: true }); });
   const address = server.address(); assert.ok(address && typeof address !== "string");
@@ -210,4 +211,25 @@ test("cancel command aborts the active turn and preserves queued messages", asyn
   await h.until(() => h.events.some(event => event.type === "cancelled" && event.messageId === h.id(6)));
   const idle = h.events.find(event => event.type === "cancelled" && event.messageId === h.id(6));
   assert.deepEqual(idle.data, { cancelled: false, pendingPreserved: true });
+});
+
+test("indexes workspace waiting and final result independently of event subscribers", async t => {
+  const indexed: StoredTurn[] = [];
+  let release!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  const database = { async saveTurn(turn: StoredTurn) { indexed.push(structuredClone(turn)); } } as SessionDatabase;
+  const h = await harness(t, async (_root, _command, messageId) => {
+    assert.equal((indexed.at(-1)?.progress?.data as any).phase, "waiting_for_workspace");
+    await blocked;
+    return { type: "completed", messageId, data: { response: "Done" } };
+  }, undefined, database);
+  t.after(release);
+  await h.send(1, { type: "prompt", sessionId: "one", prompt: "Follow-up" });
+  await h.until(() => indexed.some(turn => turn.state === "running"));
+  assert.equal(indexed[0]?.state, "queued");
+  release();
+  await h.until(() => indexed.some(turn => turn.result?.type === "completed"));
+  assert.equal(indexed.at(-1)?.messageId, h.id(1));
+  assert.equal(indexed.at(-1)?.state, "finished");
+  await h.until(async () => (await h.request("/runtime")).quiescent);
 });

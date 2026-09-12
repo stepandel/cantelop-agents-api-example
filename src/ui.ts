@@ -495,14 +495,29 @@ dialog::backdrop { background: rgba(20, 18, 14, .45); backdrop-filter: blur(2px)
   }
   // Streams one request until its terminal event; resumes with Last-Event-ID on interruption.
   async function streamRequest(url, onEvent, onGiveUp, signal) {
-    var lastId = '';
+    state.streamCursors = state.streamCursors || {};
+    state.sessionCursors = state.sessionCursors || {};
+    var sid = new URL(url, location.origin).searchParams.get('sessionId');
+    var lastId = state.streamCursors[url] || state.sessionCursors[sid] || '';
     for (var attempt = 0; attempt < 6; attempt++) {
       if (signal && signal.aborted) return false;
       try {
         var res = await fetch(url, { headers: headers(lastId ? { 'last-event-id': lastId } : {}), signal: signal });
+        if (res.status === 409) {
+          var failure = await res.json();
+          if (failure.error && failure.error.code === 'event_cursor_expired') {
+            await recoverTurn(url, onEvent, signal);
+            return true;
+          }
+        }
         if (!res.ok || !res.body) throw new Error('HTTP ' + res.status);
         var terminal = await readEvents(res.body, function (frame) {
-          if (frame.id) lastId = frame.id;
+          if (frame.id) {
+            lastId = frame.id; state.streamCursors[url] = lastId;
+            // Keep cursors opaque: each turn retains its own position. New turns
+            // inherit the latest observed session position instead of starting at zero.
+            state.sessionCursors[sid] = lastId; save();
+          }
           var payload; try { payload = JSON.parse(frame.data); } catch (e) { return false; }
           return onEvent(payload) === true;
         });
@@ -512,6 +527,22 @@ dialog::backdrop { background: rgba(20, 18, 14, .45); backdrop-filter: blur(2px)
     }
     onGiveUp(new Error('Stream ended without a terminal event'));
     return false;
+  }
+
+  async function recoverTurn(url, onEvent, signal) {
+    var query = new URL(url, location.origin).searchParams;
+    var endpoint = '/turns/inspect?sessionId=' + encodeURIComponent(query.get('sessionId')) + '&messageId=' + encodeURIComponent(query.get('messageId'));
+    while (!signal || !signal.aborted) {
+      var res = await fetch(endpoint, { headers: headers(), signal: signal });
+      if (res.ok) {
+        var turn = (await res.json()).turn;
+        if (turn.result) { onEvent(turn.result); return; }
+        if (turn.progress) onEvent(turn.progress);
+      } else if (res.status !== 404) throw new Error('Saved turn state unavailable (HTTP ' + res.status + ')');
+      // A 404 can be admission/index lag, or an older worker awaiting its lock.
+      // Do not mistake the previous turn's completed snapshot for this turn.
+      await new Promise(function (resolve) { setTimeout(resolve, 3000); });
+    }
   }
 
   // ---------- Sessions ----------

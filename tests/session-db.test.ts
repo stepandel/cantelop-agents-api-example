@@ -151,3 +151,23 @@ test("reindex command imports the live workspace without agent work", async t =>
   assert.deepEqual(result, { type: "configured", messageId: "m1", data: { indexedSessions: 1 } });
   assert.ok(await h.db.get("old"));
 });
+
+test("per-turn recovery keeps waiting follow-ups separate from completed predecessors", async t => {
+  const h = await harness(t);
+  const first = 'msg_' + 'a'.repeat(32), second = 'msg_' + 'b'.repeat(32);
+  await h.db.save(snapshot('one', { messageId: first, status: 'completed', response: 'Previous result' }));
+  const url = '/turns/inspect?sessionId=one&messageId=' + second;
+  assert.equal((await h.request(url)).status, 404);
+  await h.db.saveTurn({ sessionId: 'one', messageId: second, state: 'running', progress: { type: 'status', messageId: second, data: { phase: 'waiting_for_workspace' } } });
+  await h.db.saveTurn({ sessionId: 'one', messageId: second, state: 'queued' });
+  let result = await (await h.request(url)).json() as any;
+  assert.equal(result.turn.state, 'running');
+  assert.equal(result.turn.progress.data.phase, 'waiting_for_workspace');
+  assert.equal(result.turn.result, undefined);
+  await h.db.saveTurn({ sessionId: 'one', messageId: second, state: 'finished', result: { type: 'completed', messageId: second, data: { response: 'Follow-up result' } } });
+  await h.db.saveTurn({ sessionId: 'one', messageId: second, state: 'running' });
+  result = await (await h.request(url)).json() as any;
+  assert.equal(result.turn.result.data.response, 'Follow-up result');
+  assert.equal((await h.request(url, 'wrong')).status, 401);
+  assert.equal((await h.request('/turns/inspect?sessionId=two&messageId=' + second)).status, 404);
+});

@@ -45,3 +45,41 @@ test("running snapshots restore diagnostic phase and tools without replay", () =
   assert.deepEqual(session.turns[0].runtimeStatus, runtimeStatus);
   assert.deepEqual(session.turns[0].tools, tools);
 });
+
+function streamHarness(fetch: any, state: any = {}) {
+  const source = ui.slice(ui.indexOf('  async function streamRequest('), ui.indexOf('  // ---------- Sessions ----------'));
+  return runInNewContext(`${source}; ({ streamRequest, state });`, {
+    state, fetch, URL, location: { origin: "https://example.com" },
+    headers: (extra: object = {}) => extra, save() {},
+    setTimeout: (fn: () => void) => fn(),
+    readEvents: async (body: any, receive: any) => { for (const frame of body) if (receive(frame)) return true; return false; },
+  });
+}
+test("follow-ups inherit session cursor and reconnect retains the exact turn cursor", async () => {
+  const calls: any[] = [];
+  const h = streamHarness(async (url: string, options: any) => {
+    calls.push({ url, headers: options.headers });
+    return { ok: true, body: [{ id: String(calls.length + 40), data: JSON.stringify({ type: "completed" }) }] };
+  });
+  const first = '/turns/events?sessionId=one&messageId=first';
+  const second = '/turns/events?sessionId=one&messageId=second';
+  for (const url of [first, second, first]) await h.streamRequest(url, () => true, assert.fail);
+  assert.equal(calls[0].headers['last-event-id'], undefined);
+  assert.equal(calls[1].headers['last-event-id'], '41');
+  assert.equal(calls[2].headers['last-event-id'], '41');
+});
+test("expired replay polls only the requested turn through waiting to completion", async () => {
+  let n = 0;
+  const events: any[] = [];
+  const calls: string[] = [];
+  const h = streamHarness(async (url: string) => {
+    calls.push(url); n++;
+    if (n === 1) return { status: 409, json: async () => ({ error: { code: 'event_cursor_expired' } }) };
+    if (n === 2) return { status: 404 }; // not yet admitted/indexed
+    if (n === 3) return { ok: true, json: async () => ({ turn: { progress: { type: 'status', messageId: 'second', data: { phase: 'waiting_for_workspace' } } } }) };
+    return { ok: true, json: async () => ({ turn: { result: { type: 'completed', messageId: 'second', data: { response: 'Second result' } } } }) };
+  });
+  assert.equal(await h.streamRequest('/turns/events?sessionId=one&messageId=second', (e: any) => events.push(e), assert.fail), true);
+  assert.deepEqual(events.map(e => e.type), ['status', 'completed']);
+  assert.ok(calls.slice(1).every(url => url === '/turns/inspect?sessionId=one&messageId=second'));
+});

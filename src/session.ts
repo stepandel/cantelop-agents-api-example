@@ -1,24 +1,33 @@
 import { defineSessionBehaviour } from "@cantelop/sdk/session";
 import type { Command, Event } from "./contracts.js";
 import { handle } from "./worker.js";
+import { sessionDatabase, type StoredTurn } from "./session-db.js";
 import { Inbox } from "./inbox.js";
 
 type SessionCommand = Command | { type: "drain" };
-export function createBehaviour(run = handle, timeoutMs = 30 * 60 * 1000, root = process.cwd()) {
+export function createBehaviour(run = handle, timeoutMs = 30 * 60 * 1000, root = process.cwd(), databaseFactory = sessionDatabase) {
   let inbox: Inbox;
   let current: { controller: AbortController; interruptible: boolean; steering: boolean } | undefined;
   return defineSessionBehaviour<SessionCommand, Event>(async ({ message, session, env, signal, output, activity }) => {
     inbox ??= new Inbox(root, session.id);
+    const database = databaseFactory(env);
+    const index = async (turn: Omit<StoredTurn, "sessionId">) => {
+      try { await database?.saveTurn({ ...turn, sessionId: session.id }); }
+      catch { console.warn(JSON.stringify({ component: "agent-api", event: "turn.index_failed", sessionId: session.id, messageId: turn.messageId })); }
+    };
     if (message.payload.type === "cancel") {
       const cancelled = activity.cancel({ code: "turn_cancelled" });
       console.info(JSON.stringify({ component: "agent-api", event: "session.cancelled", messageId: message.id, sessionId: session.id, cancelled }));
-      await output.send({ type: "cancelled", messageId: message.id, sessionId: session.id,
-        data: { cancelled, pendingPreserved: true } });
+      const result: Event = { type: "cancelled", messageId: message.id, sessionId: session.id, data: { cancelled, pendingPreserved: true } };
+      await index({ messageId: message.id, state: "finished", result });
+      await output.send(result);
       return;
     }
     if (message.payload.type === "inspect") {
       const event = await run(root, message.payload, message.id, env, signal);
-      await output.send({ ...event, data: { ...(event.data as object ?? {}), messages: await inbox.snapshot() } });
+      const result = { ...event, data: { ...(event.data as object ?? {}), messages: await inbox.snapshot() } };
+      await index({ messageId: message.id, state: "finished", result });
+      await output.send(result);
       return;
     }
     if (message.payload.type !== "drain") {
@@ -33,6 +42,8 @@ export function createBehaviour(run = handle, timeoutMs = 30 * 60 * 1000, root =
         await output.send(admission.job.result);
         return;
       }
+      if (!admission.duplicate) await index({ messageId: message.id, state: "queued",
+        progress: { type: "queued", messageId: message.id, data: { mode: message.payload.type === "prompt" ? message.payload.mode ?? "queue" : "queue" } } });
       // Save before interrupting, so an accepted steering message cannot be lost.
       if (!admission.duplicate && message.payload.type === "prompt" && message.payload.mode === "steer") {
         if (current) {
@@ -59,6 +70,7 @@ export function createBehaviour(run = handle, timeoutMs = 30 * 60 * 1000, root =
           activity.extend(timeoutMs);
           const turnSignal = AbortSignal.any([activitySignal, current.controller.signal]);
           console.info(JSON.stringify({ component: "agent-api", event: "session.started", messageId: job.messageId, sessionId: session.id, command: job.command.type }));
+          await index({ messageId: job.messageId, state: "running", progress: { type: "status", messageId: job.messageId, data: { phase: "waiting_for_workspace" } } });
           let event: Event;
           try {
             await turnOutput.send({ type: "started", messageId: job.messageId, sessionId: session.id, data: {} });
@@ -68,6 +80,7 @@ export function createBehaviour(run = handle, timeoutMs = 30 * 60 * 1000, root =
                 current.interruptible = true;
                 if (current.steering) current.controller.abort({ code: "turn_steered" });
               }
+              if (event.type === "status") await index({ messageId: job.messageId, state: "running", progress: event });
               await turnOutput.send(event);
             });
           } catch {
@@ -82,6 +95,7 @@ export function createBehaviour(run = handle, timeoutMs = 30 * 60 * 1000, root =
           };
           current = undefined;
           await inbox.finish(job.messageId, event);
+          await index({ messageId: job.messageId, state: "finished", result: event });
           console[event.type === "failed" ? "error" : "info"](JSON.stringify({ component: "agent-api", event: `session.${event.type}`, messageId: job.messageId, sessionId: session.id }));
           if (!activitySignal.aborted) await turnOutput.send(event);
         }

@@ -1,5 +1,5 @@
 import { createClient, type Client, type InValue } from "@libsql/client/web";
-import { sessionId, type SessionSpec } from "./contracts.js";
+import { sessionId, type SessionSpec, type Event } from "./contracts.js";
 
 export interface StoredSession extends SessionSpec {
   /** The exact user input, before steering context is added to the agent prompt. */
@@ -16,6 +16,13 @@ export interface StoredSession extends SessionSpec {
   createdAt?: string;
   updatedAt?: string;
 }
+export interface StoredTurn {
+  sessionId: string;
+  messageId: string;
+  state: "queued" | "running" | "finished";
+  progress?: Event;
+  result?: Event;
+}
 export interface SessionQuery {
   repository?: string;
   status?: StoredSession["status"];
@@ -23,6 +30,10 @@ export interface SessionQuery {
   before?: [string, string];
 }
 export const schema = [
+  `CREATE TABLE IF NOT EXISTS agent_turns (
+    workspace TEXT NOT NULL, session_id TEXT NOT NULL, message_id TEXT NOT NULL,
+    snapshot TEXT NOT NULL, PRIMARY KEY (workspace, session_id, message_id)
+  )`,
   `CREATE TABLE IF NOT EXISTS agent_sessions (
     workspace TEXT NOT NULL, session_id TEXT NOT NULL, repository TEXT NOT NULL,
     model TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('running','completed','failed')),
@@ -68,6 +79,17 @@ export class SessionDatabase {
       args: [this.workspace, session.sessionId, session.repository, session.model, session.status,
         (session.requestPrompt ?? session.prompt).slice(0, 200), session.createdAt, session.updatedAt, JSON.stringify(session)],
     });
+  }
+  async saveTurn(turn: StoredTurn) {
+    await this.client.execute({ sql: `INSERT INTO agent_turns (workspace, session_id, message_id, snapshot) VALUES (?, ?, ?, ?)
+      ON CONFLICT(workspace, session_id, message_id) DO UPDATE SET snapshot=excluded.snapshot
+      WHERE json_extract(agent_turns.snapshot, '$.state') != 'finished'
+        AND NOT (json_extract(agent_turns.snapshot, '$.state') = 'running' AND json_extract(excluded.snapshot, '$.state') = 'queued')`,
+      args: [this.workspace, turn.sessionId, turn.messageId, JSON.stringify(turn)] });
+  }
+  async getTurn(id: string, messageId: string): Promise<StoredTurn | null> {
+    const result = await this.client.execute({ sql: "SELECT snapshot FROM agent_turns WHERE workspace=? AND session_id=? AND message_id=?", args: [this.workspace, id, messageId] });
+    return result.rows[0] ? JSON.parse(String(result.rows[0].snapshot)) as StoredTurn : null;
   }
   async get(id: string): Promise<StoredSession | null> {
     const result = await this.client.execute({ sql: "SELECT snapshot FROM agent_sessions WHERE workspace=? AND session_id=?", args: [this.workspace, id] });
