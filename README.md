@@ -86,12 +86,22 @@ the stored session and queue snapshot, opening an
 existing session by ID (for example an `issue-…` session), and setting a
 per-repository GitHub issue model rule.
 
+The sidebar lists every session in the shared session index (`GET /sessions`,
+see [Querying sessions from clients](#querying-sessions-from-clients)), including
+sessions started by the GitHub issue webhook, which show an issue badge and the
+issue title. Filter by status, refresh, or load older pages; the list also
+refreshes when a turn finishes and every 30 seconds while the tab is visible.
+Opening a listed session loads its stored prompt, response and diagnostics from
+the index. A turn started elsewhere cannot be streamed into this tab, so the
+console polls the index until it finishes. Without `SESSION_DATABASE_URL` the
+sidebar shows only sessions this browser started or opened by ID.
+
 The page embeds no secrets and requires no authentication itself; every API
 call it makes carries the token you entered as a `Bearer` header to the same
-origin. Token, defaults and the session list live in that browser's
-`localStorage` only (use **Forget token** to clear it). If the tab closes
-mid-turn, reopen the session and use **Reconnect** or **Inspect**; disconnecting
-never cancels the agent.
+origin. Token, defaults and the transcripts streamed in this browser live in its
+`localStorage` only (use **Forget token** to clear it; **Forget** on a session
+drops only the local transcript). If the tab closes mid-turn, reopen the session
+and use **Reconnect** or **Inspect**; disconnecting never cancels the agent.
 
 ## API
 

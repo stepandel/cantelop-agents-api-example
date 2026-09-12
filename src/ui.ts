@@ -107,7 +107,15 @@ aside { border-right: 1px solid var(--line); background: var(--panel-2); display
 .open-form input { padding-left: 32px; padding-right: 60px; font-size: 13px; }
 .open-form .btn { position: absolute; right: 4px; top: 4px; bottom: 4px; padding: 0 9px; line-height: 1; font-size: 12.5px; }
 .side-label { display: flex; align-items: baseline; justify-content: space-between; padding: 10px 16px 6px; font-size: 11.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--text-3); }
-.side-label span { font-weight: 500; letter-spacing: 0; text-transform: none; }
+.side-label #session-count { font-weight: 500; letter-spacing: 0; text-transform: none; }
+.side-label .btn.icon-btn { padding: 3px; margin: -5px -6px -5px 0; }
+.side-label .btn.icon-btn svg.i { width: 14px; height: 14px; }
+.side-label .btn.icon-btn.spin svg.i { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.side-filter { display: flex; gap: 2px; padding: 0 12px 8px; }
+.seg { font: inherit; font-size: 12px; font-weight: 500; color: var(--text-2); background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 2px 8px; cursor: pointer; line-height: 18px; transition: background .15s var(--ease), color .15s var(--ease); }
+.seg:hover { background: var(--bg-2); color: var(--text); }
+.seg[aria-pressed="true"] { background: var(--panel); border-color: var(--line); color: var(--text); box-shadow: var(--shadow-sm); }
 .sessions { overflow: auto; flex: 1; padding: 0 8px 12px; display: grid; gap: 2px; align-content: start; }
 .session { font: inherit; text-align: left; color: inherit; background: transparent; border: 1px solid transparent; width: 100%; padding: 9px 10px; border-radius: var(--r-sm); cursor: pointer; display: grid; gap: 3px; transition: background .15s var(--ease); }
 .session:hover { background: var(--bg-2); }
@@ -119,6 +127,13 @@ aside { border-right: 1px solid var(--line); background: var(--panel-2); display
 .session .s-prompt:empty::before { content: "No prompt yet"; color: var(--text-3); }
 .side-empty { padding: 20px 12px; color: var(--text-2); font-size: 13px; line-height: 1.55; }
 .side-empty strong { display: block; color: var(--text); font-weight: 600; margin-bottom: 3px; }
+.session .s-issue { display: inline-flex; align-items: center; gap: 3px; flex: none; font-family: var(--mono); font-size: 11px; line-height: 16px; padding: 0 5px; border-radius: 5px; color: var(--text-2); background: var(--bg-2); border: 1px solid var(--line); }
+.session .s-issue svg.i { width: 11px; height: 11px; }
+.side-foot { padding: 4px 12px 12px; display: grid; gap: 8px; }
+.side-foot:empty { display: none; }
+.side-note { color: var(--text-3); font-size: 12px; line-height: 1.45; padding: 0 4px; }
+.side-note.bad { color: var(--bad); }
+[hidden] { display: none !important; }
 .scrim { display: none; }
 
 /* Status vocabulary */
@@ -278,6 +293,7 @@ dialog::backdrop { background: rgba(20, 18, 14, .45); backdrop-filter: blur(2px)
   <symbol id="i-branch" viewBox="0 0 24 24"><circle cx="6" cy="5" r="2.5"/><circle cx="6" cy="19" r="2.5"/><circle cx="18" cy="8" r="2.5"/><path d="M6 7.5v9M18 10.5c0 4-12 2-12 6"/></symbol>
   <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
   <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v5h-5"/></symbol>
+  <symbol id="i-issue" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="2.5"/></symbol>
 </svg>
 <header class="topbar">
   <button class="btn ghost icon-btn" id="menu" aria-label="Show sessions" aria-controls="sidebar" aria-expanded="false"><svg class="i"><use href="#i-menu"/></svg></button>
@@ -293,8 +309,15 @@ dialog::backdrop { background: rgba(20, 18, 14, .45); backdrop-filter: blur(2px)
       <button class="btn primary block" id="new-session"><svg class="i"><use href="#i-plus"/></svg>New session</button>
       <form id="open-form" class="open-form"><svg class="i"><use href="#i-search"/></svg><input id="open-id" placeholder="Open by session ID" autocomplete="off" spellcheck="false" aria-label="Session ID"><button type="submit" class="btn small">Open</button></form>
     </div>
-    <div class="side-label">Sessions <span id="session-count"></span></div>
+    <div class="side-label"><span>Sessions <span id="session-count"></span></span><button class="btn ghost icon-btn" id="refresh-sessions" title="Refresh from the session index" aria-label="Refresh sessions"><svg class="i"><use href="#i-refresh"/></svg></button></div>
+    <div class="side-filter" role="group" aria-label="Filter by status">
+      <button type="button" class="seg" data-filter="" aria-pressed="true">All</button>
+      <button type="button" class="seg" data-filter="running" aria-pressed="false">Running</button>
+      <button type="button" class="seg" data-filter="completed" aria-pressed="false">Completed</button>
+      <button type="button" class="seg" data-filter="failed" aria-pressed="false">Failed</button>
+    </div>
     <div class="sessions" id="sessions"></div>
+    <div class="side-foot" id="side-foot"></div>
   </aside>
   <main>
     <section class="view active" id="view-new">
@@ -315,10 +338,11 @@ dialog::backdrop { background: rgba(20, 18, 14, .45); backdrop-filter: blur(2px)
       <div class="session-head">
         <span class="title" id="s-repo"></span>
         <span class="chip" id="s-model"></span>
+        <span class="chip" id="s-issue" hidden></span>
         <button class="id-btn" id="copy-id" title="Copy session ID"><code id="s-id"></code><svg class="i"><use href="#i-copy"/></svg></button>
         <span class="spacer"></span>
         <button class="btn ghost" id="inspect"><svg class="i"><use href="#i-eye"/></svg><span class="t">Inspect</span></button>
-        <button class="btn ghost danger" id="forget"><svg class="i"><use href="#i-trash"/></svg><span class="t">Remove</span></button>
+        <button class="btn ghost danger" id="forget" title="Forget this browser's copy of the transcript"><svg class="i"><use href="#i-trash"/></svg><span class="t">Forget</span></button>
       </div>
       <div class="transcript" id="transcript-scroll"><div class="transcript-inner" id="transcript"></div></div>
       <div class="composer">
@@ -488,34 +512,180 @@ dialog::backdrop { background: rgba(20, 18, 14, .45); backdrop-filter: blur(2px)
   }
 
   // ---------- Sessions ----------
+  // localStorage keeps only the transcripts this browser streamed. The server's
+  // session index (GET /sessions) supplies the list itself, including sessions
+  // started by the GitHub issue webhook, so every session is visible here.
+  var PAGE = 50;
+  var remote = { items: [], byId: {}, cursor: null, paged: false, loading: false, loaded: false, unavailable: false, error: '', filter: '', seq: 0 };
   function session(id) { return state.sessions[id]; }
   function upsertSession(s) {
     if (!state.sessions[s.id]) state.order.unshift(s.id);
     state.sessions[s.id] = Object.assign(state.sessions[s.id] || { turns: [] }, s);
     save(); renderSidebar();
   }
-  function lastStatus(s) { var t = s.turns[s.turns.length - 1]; return t ? t.status : 'idle'; }
+  function time(v) { var n = typeof v === 'number' ? v : Date.parse(v); return isNaN(n) ? 0 : n; }
+  function firstPrompt(s) { return s.turns[0] ? s.turns[0].prompt : ''; }
+  // Issue sessions carry a fixed prompt prefix; the preview stored in the index is truncated, so the title may be cut short.
+  function issueInfo(id, prompt) {
+    var m = /^Address GitHub issue #(\d+)\b/.exec(prompt || '');
+    if (!m && !/^issue-/.test(id || '')) return null;
+    var t = /"title":"((?:[^"\\]|\\.)*)/.exec(prompt || '');
+    return { number: m ? m[1] : '', title: t ? t[1].replace(/\\(.)/g, '$1') : '' };
+  }
+  function rowStatus(s, r) {
+    var t = s && s.turns[s.turns.length - 1];
+    if (t && (t.status === 'running' || t.status === 'queued') && active[s.id + ':' + t.messageId]) return t.status;
+    if (r && !(t && t.finishedAt && t.finishedAt > time(r.updatedAt))) return r.status;
+    return t ? t.status : r ? r.status : 'idle';
+  }
+  function sessionRows() {
+    var rows = [], seen = {};
+    remote.items.forEach(function (r) {
+      seen[r.sessionId] = true;
+      var s = session(r.sessionId);
+      rows.push({ id: r.sessionId, repository: (s && s.repository) || r.repository, createdAt: r.createdAt, status: rowStatus(s, r), prompt: (s && firstPrompt(s)) || r.promptPreview });
+    });
+    state.order.forEach(function (id) {
+      var s = session(id); if (!s || seen[id]) return;
+      var st = rowStatus(s, null);
+      if (remote.filter && st !== remote.filter) return;
+      rows.push({ id: id, repository: s.repository, createdAt: s.createdAt, status: st, prompt: firstPrompt(s) || (s.source === 'opened' ? 'Opened by ID' : '') });
+    });
+    rows.sort(function (a, b) { return time(b.createdAt) - time(a.createdAt); });
+    return rows;
+  }
   function renderSidebar() {
     var el = $('sessions'); el.innerHTML = '';
-    $('session-count').textContent = state.order.length ? String(state.order.length) : '';
-    if (!state.order.length) { el.innerHTML = '<div class="side-empty"><strong>No sessions yet</strong>Start one with the form, or open an existing session by its ID.</div>'; return; }
-    state.order.forEach(function (id) {
-      var s = session(id); if (!s) return;
+    var rows = sessionRows();
+    $('session-count').textContent = rows.length ? String(rows.length) + (remote.cursor ? '+' : '') : '';
+    $('refresh-sessions').classList.toggle('spin', remote.loading);
+    if (!rows.length) {
+      el.innerHTML = '<div class="side-empty">' + (remote.loading && !remote.loaded ? 'Loading sessions…'
+        : remote.filter ? '<strong>No ' + esc(remote.filter) + ' sessions</strong>Nothing in the index matches this filter.'
+        : '<strong>No sessions yet</strong>Start one with the form, or open an existing session by its ID.' + (remote.loaded ? ' Sessions started from GitHub issues appear here too.' : '')) + '</div>';
+    }
+    rows.forEach(function (r) {
       var b = document.createElement('button');
       b.type = 'button';
-      b.className = 'session' + (current === id ? ' active' : '');
-      var first = s.turns[0] ? s.turns[0].prompt : (s.source === 'opened' ? 'Opened by ID' : '');
-      var st = lastStatus(s);
-      b.innerHTML = '<div class="s-row"><span class="s-repo">' + esc(s.repository || 'unknown repository') + '</span><span class="s-time">' + esc(s.createdAt ? when(s.createdAt) : '') + '</span></div>' +
-        '<div class="s-row"><span class="dot ' + esc(st) + '" title="' + esc(st) + '"></span><span class="s-prompt">' + esc(first) + '</span></div>';
-      b.onclick = function () { show(id); closeDrawer(); };
+      b.className = 'session' + (current === r.id ? ' active' : '');
+      var issue = issueInfo(r.id, r.prompt);
+      var preview = issue ? (issue.title || (issue.number ? 'GitHub issue #' + issue.number : 'GitHub issue')) : r.prompt;
+      b.innerHTML = '<div class="s-row"><span class="s-repo">' + esc(r.repository || 'unknown repository') + '</span><span class="s-time">' + esc(r.createdAt ? when(r.createdAt) : '') + '</span></div>' +
+        '<div class="s-row"><span class="dot ' + esc(r.status) + '" title="' + esc(r.status) + '"></span>' +
+        (issue ? '<span class="s-issue" title="Started from a GitHub issue">' + icon('issue') + (issue.number ? '#' + esc(issue.number) : 'issue') + '</span>' : '') +
+        '<span class="s-prompt">' + esc(preview) + '</span></div>';
+      b.onclick = function () { open(r.id); closeDrawer(); };
       el.appendChild(b);
     });
+    var foot = $('side-foot'); foot.innerHTML = '';
+    if (remote.error) foot.innerHTML = '<div class="side-note bad">' + esc(remote.error) + '</div>';
+    else if (!state.token) foot.innerHTML = '<div class="side-note">Set the API token in Settings to load the session index.</div>';
+    if (remote.cursor) foot.innerHTML += '<button type="button" class="btn small block" id="load-more"' + (remote.loading ? ' disabled' : '') + '>' + (remote.loading ? 'Loading…' : 'Load older sessions') + '</button>';
+    var more = $('load-more'); if (more) more.onclick = function () { loadSessions('more'); };
+  }
+  // mode: 'reset' replaces the list, 'more' appends the next page, 'refresh' re-reads the first page and merges it.
+  async function loadSessions(mode) {
+    var seq = ++remote.seq;
+    if (!state.token) { remote.items = []; remote.byId = {}; remote.cursor = null; remote.paged = false; remote.loaded = false; remote.error = ''; renderSidebar(); return; }
+    var more = mode === 'more';
+    if (more && (!remote.cursor || remote.loading)) return;
+    remote.loading = true; remote.error = ''; renderSidebar();
+    try {
+      var data = await call('GET', '/sessions?limit=' + PAGE + (remote.filter ? '&status=' + remote.filter : '') + (more ? '&cursor=' + encodeURIComponent(remote.cursor) : ''));
+      if (seq !== remote.seq) return;
+      var replace = !more && !(mode === 'refresh' && remote.paged);
+      if (replace) { remote.items = []; remote.byId = {}; remote.paged = false; }
+      data.sessions.forEach(function (r) {
+        var known = remote.byId[r.sessionId];
+        if (known) Object.assign(known, r); else { remote.byId[r.sessionId] = r; remote.items.push(r); }
+      });
+      if (more || replace) remote.cursor = data.nextCursor;
+      if (more) remote.paged = true;
+      remote.loaded = true; remote.unavailable = false;
+    } catch (err) {
+      if (seq !== remote.seq) return;
+      remote.unavailable = err.message === 'Service unavailable';
+      remote.error = remote.unavailable ? 'Session index unavailable; showing only this browser\'s sessions. Configure SESSION_DATABASE_URL to list every session.'
+        : err.message === 'Unauthorized' ? 'The session index rejected the API token.' : 'Could not load sessions: ' + err.message;
+    }
+    remote.loading = false; renderSidebar();
+  }
+  var refreshTimer = null;
+  function refreshSoon(ms) { clearTimeout(refreshTimer); refreshTimer = setTimeout(function () { loadSessions('refresh'); }, ms || 0); }
+  function setFilter(value) {
+    remote.filter = value;
+    Array.prototype.forEach.call(document.querySelectorAll('.seg'), function (b) { b.setAttribute('aria-pressed', b.getAttribute('data-filter') === value ? 'true' : 'false'); });
+    loadSessions('reset');
+  }
+  Array.prototype.forEach.call(document.querySelectorAll('.seg'), function (b) { b.onclick = function () { setFilter(b.getAttribute('data-filter') || ''); }; });
+  $('refresh-sessions').onclick = function () { loadSessions('refresh'); };
+  setInterval(function () { if (document.visibilityState === 'visible' && state.token && !remote.loading && !remote.unavailable) loadSessions('refresh'); }, 30000);
+  document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible' && state.token && remote.loaded) loadSessions('refresh'); });
+
+  // Opens any session: one streamed here, one from the index, or one typed by ID.
+  function open(id) {
+    if (!session(id)) {
+      var r = remote.byId[id] || {};
+      upsertSession({ id: id, repository: r.repository, model: r.model, createdAt: r.createdAt || Date.now(), source: r.sessionId ? 'indexed' : 'opened', turns: [] });
+    }
+    show(id);
+    hydrate(id);
+  }
+  // Reads the indexed snapshot; falls back to the worker's workspace snapshot when the index lacks it.
+  async function hydrate(id) {
+    var s = session(id); if (!s || !state.token) return;
+    try {
+      var data = await call('GET', '/sessions/inspect?sessionId=' + encodeURIComponent(id));
+      remote.unavailable = false;
+      applySnapshot(s, data.session);
+    } catch (err) {
+      if (err.message === 'Service unavailable') remote.unavailable = true;
+      if (err.message === 'Session not found' || remote.unavailable) { if (!s.turns.length) await inspect(id, false); }
+      else toast('Could not load session: ' + err.message);
+    }
+  }
+  function applySnapshot(s, d) {
+    if (!d) return false;
+    var changed = false;
+    if (d.repository && s.repository !== d.repository) { s.repository = d.repository; changed = true; }
+    if (d.model && s.model !== d.model) { s.model = d.model; changed = true; }
+    if (d.createdAt && s.createdAt !== d.createdAt) { s.createdAt = d.createdAt; changed = true; }
+    var last = s.turns[s.turns.length - 1];
+    if (!last && d.prompt) {
+      var t = { messageId: 'stored', prompt: d.requestPrompt || d.prompt, status: 'running', phase: 'elsewhere', blocks: [], tools: [] };
+      if (d.status !== 'running') finishStored(t, s, d);
+      s.turns.push(t); changed = true;
+    } else if (last && !active[s.id + ':' + last.messageId] && (last.status === 'running' || last.status === 'disconnected') && d.status !== 'running') {
+      finishStored(last, s, d); changed = true;
+    }
+    // Worker snapshots also carry the durable message queue for turns this browser dispatched.
+    if (Array.isArray(d.messages)) d.messages.forEach(function (job) {
+      var turn = null; for (var i = 0; i < s.turns.length; i++) if (s.turns[i].messageId === job.messageId) turn = s.turns[i];
+      if (!turn || active[s.id + ':' + turn.messageId]) return;
+      if (job.state === 'queued') { if (turn.status !== 'queued') changed = true; turn.status = 'queued'; turn.mode = job.mode || turn.mode; }
+      else if (job.state === 'running') { if (turn.status !== 'disconnected') changed = true; turn.status = 'disconnected'; }
+      else if (job.state === 'finished' && job.result && (turn.status === 'running' || turn.status === 'queued' || turn.status === 'disconnected')) { applyEvent(s, turn, job.result); changed = true; }
+    });
+    if (changed) { save(); if (current === s.id) show(s.id); else renderSidebar(); }
+    return changed;
+  }
+  function finishStored(t, s, d) {
+    t.status = d.status; t.phase = ''; t.response = d.response; t.diagnostic = d.diagnostic; t.branch = 'agent/' + s.id;
+    t.error = d.status === 'failed' ? 'Run failed (from stored state).' : undefined;
+    if (!t.finishedAt) t.finishedAt = time(d.updatedAt) || Date.now();
+  }
+  // A turn started elsewhere cannot be streamed here, so poll the index while it runs.
+  var pollTimer = null;
+  function schedulePoll() {
+    clearTimeout(pollTimer);
+    var s = session(current); if (!s || remote.unavailable) return;
+    var t = s.turns[s.turns.length - 1];
+    if (t && t.status === 'running' && !t.stream) pollTimer = setTimeout(function () { hydrate(s.id).then(schedulePoll); }, 8000);
   }
   function openDrawer() { $('sidebar').classList.add('open'); $('scrim').classList.add('show'); $('menu').setAttribute('aria-expanded', 'true'); }
   function closeDrawer() { $('sidebar').classList.remove('open'); $('scrim').classList.remove('show'); $('menu').setAttribute('aria-expanded', 'false'); }
   function showNew() {
-    current = null;
+    current = null; clearTimeout(pollTimer);
     $('view-new').classList.add('active'); $('view-session').classList.remove('active');
     if (!$('repository').value) $('repository').value = state.repository;
     if (!$('model').value) $('model').value = state.model;
@@ -527,11 +697,15 @@ dialog::backdrop { background: rgba(20, 18, 14, .45); backdrop-filter: blur(2px)
     $('view-new').classList.remove('active'); $('view-session').classList.add('active');
     $('s-repo').textContent = s.repository || 'unknown repository';
     $('s-model').textContent = s.model || 'model unknown';
+    var issue = issueInfo(id, firstPrompt(s));
+    $('s-issue').hidden = !issue;
+    if (issue) $('s-issue').textContent = 'GitHub issue' + (issue.number ? ' #' + issue.number : '');
     $('s-id').textContent = s.id;
     $('send-error').textContent = '';
     renderTranscript(s);
     renderSidebar();
     s.turns.forEach(function (t) { if ((t.status === 'running' || t.status === 'queued') && !active[id + ':' + t.messageId] && t.stream) attach(s, t); });
+    schedulePoll();
   }
 
   // ---------- Turns ----------
@@ -551,7 +725,7 @@ dialog::backdrop { background: rgba(20, 18, 14, .45); backdrop-filter: blur(2px)
     if (t.status === 'queued') return t.mode === 'steer' ? 'Steering — waiting for the active turn to stop' : 'Queued — waiting for earlier messages';
     if (t.status === 'running') {
       if (!t.phase) return 'Dispatched — waiting for the session to start';
-      return { started: 'Session started', waiting_for_workspace: 'Waiting for the shared workspace lock', checkout: 'Checking out the repository', agent_starting: 'Starting the agent', working: 'Agent is working' }[t.phase] || t.phase;
+      return { started: 'Session started', waiting_for_workspace: 'Waiting for the shared workspace lock', checkout: 'Checking out the repository', agent_starting: 'Starting the agent', working: 'Agent is working', elsewhere: 'Agent is running; started outside this tab, so progress is refreshed from the session index' }[t.phase] || t.phase;
     }
     if (t.status === 'disconnected') return 'Stream interrupted. The agent may still be running.';
     var took = t.finishedAt && t.startedAt ? ' in ' + Math.max(1, Math.round((t.finishedAt - t.startedAt) / 1000)) + 's' : '';
@@ -628,7 +802,7 @@ dialog::backdrop { background: rgba(20, 18, 14, .45); backdrop-filter: blur(2px)
     var terminal = t.status !== 'running' && t.status !== 'queued';
     if (terminal && !t.finishedAt) t.finishedAt = Date.now();
     if (terminal || p.type === 'status' || p.type === 'tool.status') save(); else throttleSave();
-    repaint(s, t); if (terminal) renderSidebar();
+    repaint(s, t); if (terminal) { renderSidebar(); refreshSoon(1500); }
     return terminal;
   }
   var saveTimer = null;
@@ -680,41 +854,27 @@ dialog::backdrop { background: rgba(20, 18, 14, .45); backdrop-filter: blur(2px)
   document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && $('sidebar').classList.contains('open')) closeDrawer(); });
   $('copy-id').onclick = function () { navigator.clipboard.writeText(current).then(function () { toast('Session ID copied'); }, function () { toast(current); }); };
   $('forget').onclick = function () {
-    if (!current || !confirm('Remove this session from the browser list? Server state is kept.')) return;
+    if (!current || !confirm('Forget this browser\'s copy of the session? Server state and the session index are kept, so it stays listed.')) return;
     delete state.sessions[current]; state.order = state.order.filter(function (x) { return x !== current; }); save(); showNew();
   };
   $('open-form').onsubmit = async function (e) {
     e.preventDefault();
     var id = $('open-id').value.trim(); if (!/^[a-zA-Z0-9_-]+$/.test(id)) { toast('Invalid session ID'); return; }
-    if (!session(id)) upsertSession({ id: id, createdAt: Date.now(), source: 'opened', turns: [] });
-    $('open-id').value = ''; show(id); closeDrawer();
-    inspect(id, false);
+    $('open-id').value = ''; open(id); closeDrawer();
   };
-  async function inspect(id, open) {
+  async function inspect(id, modal) {
     var s = session(id); if (!s) return;
-    if (open) { $('inspect-body').textContent = 'Loading…'; $('inspect-dialog').showModal(); }
+    if (modal) { $('inspect-body').textContent = 'Loading…'; $('inspect-dialog').showModal(); }
     try {
       var accepted = await call('POST', '/sessions/inspect', { sessionId: id });
       await streamRequest(accepted.stream, function (p) {
         if (p.type !== 'session') return false;
         var d = p.data;
-        if (open) $('inspect-body').textContent = d ? JSON.stringify(d, null, 2) : 'Unknown session (no stored state on the server).';
-        if (d) {
-          if (d.repository) s.repository = d.repository; if (d.model) s.model = d.model;
-          if (!s.turns.length && d.prompt) s.turns.push({ messageId: 'stored', prompt: d.requestPrompt || d.prompt, status: d.status === 'running' ? 'disconnected' : d.status, phase: '', blocks: [], tools: [], response: d.response, error: d.status === 'failed' ? 'Run failed (from stored state).' : undefined, diagnostic: d.diagnostic, branch: 'agent/' + s.id });
-          else if (d.status !== 'running') { var last = s.turns[s.turns.length - 1]; if (last && (last.status === 'running' || last.status === 'disconnected') && !active[id + ':' + last.messageId]) { last.status = d.status; last.response = d.response; last.diagnostic = d.diagnostic; last.branch = 'agent/' + s.id; if (d.status === 'failed') last.error = 'Run failed (from stored state).'; } }
-          if (Array.isArray(d.messages)) d.messages.forEach(function (job) {
-            var turn = null; for (var i = 0; i < s.turns.length; i++) if (s.turns[i].messageId === job.messageId) turn = s.turns[i];
-            if (!turn) return;
-            if (job.state === 'queued') { turn.status = 'queued'; turn.mode = job.mode || turn.mode; }
-            else if (job.state === 'running' && !active[id + ':' + turn.messageId]) turn.status = 'disconnected';
-            else if (job.state === 'finished' && job.result) applyEvent(s, turn, job.result);
-          });
-          save(); if (current === id) show(id); else renderSidebar();
-        } else if (open) { /* nothing stored */ }
+        if (modal) $('inspect-body').textContent = d ? JSON.stringify(d, null, 2) : 'Unknown session (no stored state on the server).';
+        applySnapshot(s, d);
         return true;
-      }, function (err) { if (open) $('inspect-body').textContent = 'Inspection stream failed: ' + err.message; });
-    } catch (err) { if (open) $('inspect-body').textContent = 'Inspection failed: ' + err.message; else toast('Inspection failed: ' + err.message); }
+      }, function (err) { if (modal) $('inspect-body').textContent = 'Inspection stream failed: ' + err.message; });
+    } catch (err) { if (modal) $('inspect-body').textContent = 'Inspection failed: ' + err.message; else toast('Inspection failed: ' + err.message); }
   }
   $('inspect').onclick = function () { inspect(current, true); };
   $('close-inspect').onclick = function () { $('inspect-dialog').close(); };
@@ -728,9 +888,9 @@ dialog::backdrop { background: rgba(20, 18, 14, .45); backdrop-filter: blur(2px)
   $('save-settings').onclick = function () {
     state.token = $('token').value.trim(); state.repository = $('default-repository').value.trim(); state.model = $('default-model').value.trim(); save();
     if (!$('repository').value) $('repository').value = state.repository; if (!$('model').value) $('model').value = state.model;
-    paintHealth(); toast('Saved'); $('settings').close();
+    paintHealth(); toast('Saved'); $('settings').close(); loadSessions('reset');
   };
-  $('clear-token').onclick = function () { state.token = ''; $('token').value = ''; save(); paintHealth(); toast('Token removed'); };
+  $('clear-token').onclick = function () { state.token = ''; $('token').value = ''; save(); paintHealth(); toast('Token removed'); loadSessions('reset'); };
   $('rule-form').onsubmit = async function (e) {
     e.preventDefault(); $('rule-status').textContent = 'Applying…';
     try {
@@ -752,7 +912,7 @@ dialog::backdrop { background: rgba(20, 18, 14, .45); backdrop-filter: blur(2px)
   fetch('/health').then(function (r) { return r.ok ? r.json() : Promise.reject(); }).then(function () { online = true; paintHealth(); }, function () { online = false; paintHealth(); });
   renderSidebar();
   showNew();
-  if (!state.token) $('open-settings').click();
+  if (!state.token) $('open-settings').click(); else loadSessions('reset');
 })();
 </script>
 </body>
