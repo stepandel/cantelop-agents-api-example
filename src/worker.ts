@@ -80,7 +80,7 @@ async function handleLocked(root: string, command: Exclude<Command, { type: "rei
   const previous = await readJSON<StoredSession>(file);
   if (command.type === "create" && previous) throw new Error("Session already exists");
   const requestPrompt = command.type === "prompt" ? command.prompt : spec.prompt;
-  const stored: StoredSession = { ...spec, requestPrompt, opencodeId: previous?.opencodeId, status: "running", createdAt: previous?.createdAt ?? new Date().toISOString(), updatedAt: previous?.updatedAt };
+  const stored: StoredSession = { ...spec, messageId, tools: [], requestPrompt, opencodeId: previous?.opencodeId, status: "running", createdAt: previous?.createdAt ?? new Date().toISOString(), updatedAt: previous?.updatedAt };
   const saveSession = async () => {
     const lastUpdate = stored.updatedAt ? Date.parse(stored.updatedAt) : 0;
     stored.updatedAt = new Date(Math.max(Date.now(), lastUpdate + 1)).toISOString();
@@ -96,7 +96,15 @@ async function handleLocked(root: string, command: Exclude<Command, { type: "rei
     const directory = await deps.checkout(root, spec.repository, spec.sessionId, agentEnv, signal);
     await emit(event("status", { phase: "agent_starting" }, spec.sessionId));
     stored.response = await deps.runAgent({ root, directory, env: agentEnv, model: stored.model, prompt: spec.prompt, id: stored.opencodeId, signal,
-      onProgress: (progress: Progress) => emit(event(progress.type, progress.data, spec.sessionId)),
+      onProgress: async (progress: Progress) => {
+        if (progress.type === "tool.status") {
+          const tool = progress.data as { partId: string; tool: string; status: string };
+          const previous = stored.tools!.find(item => item.partId === tool.partId);
+          if (previous) previous.status = tool.status;
+          else stored.tools!.push({ partId: tool.partId, tool: tool.tool, status: tool.status });
+        }
+        await emit(event(progress.type, progress.data, spec.sessionId));
+      },
       onCreated: async id => { stored.opencodeId = id; await saveSession(); },
     });
     signal.throwIfAborted();

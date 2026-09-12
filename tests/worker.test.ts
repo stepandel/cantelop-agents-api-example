@@ -141,3 +141,28 @@ test("steering preserves the previous task, model and conversation", async t => 
   const stored = await h.run({ type: "inspect", sessionId: "one" }, "m3");
   assert.equal((stored.data as { requestPrompt: string }).requestPrompt, "Start with tests");
 });
+
+test("webhook and API turns persist stream identity and tool summaries", async t => {
+  const h = await harness(t);
+  h.deps.runAgent = async options => {
+    for (const status of ["running", "completed"]) await options.onProgress?.({
+      type: "tool.status", data: { partId: "tool-1", tool: "bash", status, input: "not persisted" },
+    });
+    return "Done";
+  };
+  await h.run({ type: "rule", repository: "owner/repo", model }, "rule");
+  const commands: Command[] = [
+    { type: "create", spec: { sessionId: "api-tools", repository: "owner/repo", model, prompt: "Start" } },
+    { type: "issue", deliveryId: "delivery", issue: { repository: "owner/repo", number: 99, title: "Fix", body: "", association: "OWNER" } },
+  ];
+  for (const [i, command] of commands.entries()) {
+    const result = await h.run(command, `message-${i}`);
+    const snapshot = (await h.run({ type: "inspect", sessionId: result.sessionId! }, "inspect")).data as import("../src/session-db.js").StoredSession;
+    assert.equal(snapshot.messageId, `message-${i}`);
+    assert.deepEqual(snapshot.tools, [{ partId: "tool-1", tool: "bash", status: "completed" }]);
+    await h.run({ type: "prompt", sessionId: result.sessionId!, prompt: "Continue" }, `followup-${i}`);
+    const next = (await h.run({ type: "inspect", sessionId: result.sessionId! }, "inspect")).data as import("../src/session-db.js").StoredSession;
+    assert.equal(next.messageId, `followup-${i}`);
+    assert.equal(next.tools?.length, 1);
+  }
+});

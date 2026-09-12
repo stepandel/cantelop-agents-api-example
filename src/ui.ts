@@ -654,12 +654,20 @@ dialog::backdrop { background: rgba(20, 18, 14, .45); backdrop-filter: blur(2px)
     if (d.model && s.model !== d.model) { s.model = d.model; changed = true; }
     if (d.createdAt && s.createdAt !== d.createdAt) { s.createdAt = d.createdAt; changed = true; }
     var last = s.turns[s.turns.length - 1];
-    if (!last && d.prompt) {
-      var t = { messageId: 'stored', prompt: d.requestPrompt || d.prompt, status: 'running', phase: 'elsewhere', blocks: [], tools: [] };
-      if (d.status !== 'running') finishStored(t, s, d);
-      s.turns.push(t); changed = true;
-    } else if (last && !active[s.id + ':' + last.messageId] && (last.status === 'running' || last.status === 'disconnected') && d.status !== 'running') {
-      finishStored(last, s, d); changed = true;
+    var target = d.messageId ? s.turns.find(function (t) { return t.messageId === d.messageId; }) : last;
+    // Upgrade snapshots cached before turn identities were persisted.
+    if (!target && last && last.messageId === 'stored') target = last;
+    if (!target && d.prompt) {
+      target = { messageId: d.messageId || 'stored', prompt: d.requestPrompt || d.prompt, status: 'running', phase: 'elsewhere', blocks: [], tools: [] };
+      s.turns.push(target); changed = true;
+    }
+    if (target && !active[s.id + ':' + target.messageId]) {
+      if (d.messageId) {
+        target.messageId = d.messageId;
+        target.stream = '/turns/events?sessionId=' + encodeURIComponent(s.id) + '&messageId=' + encodeURIComponent(d.messageId);
+      }
+      if (d.status !== 'running') finishStored(target, s, d);
+      changed = true;
     }
     // Worker snapshots also carry the durable message queue for turns this browser dispatched.
     if (Array.isArray(d.messages)) d.messages.forEach(function (job) {
@@ -673,11 +681,12 @@ dialog::backdrop { background: rgba(20, 18, 14, .45); backdrop-filter: blur(2px)
     return changed;
   }
   function finishStored(t, s, d) {
+    if (Array.isArray(d.tools)) t.tools = d.tools;
     t.status = d.status; t.phase = ''; t.response = d.response; t.diagnostic = d.diagnostic; t.branch = 'agent/' + s.id;
     t.error = d.status === 'failed' ? 'Run failed (from stored state).' : undefined;
     if (!t.finishedAt) t.finishedAt = time(d.updatedAt) || Date.now();
   }
-  // A turn started elsewhere cannot be streamed here, so poll the index while it runs.
+  // Older snapshots lack a turn ID; keep summary polling as a compatibility fallback.
   var pollTimer = null;
   function schedulePoll() {
     clearTimeout(pollTimer);

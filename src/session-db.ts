@@ -5,6 +5,9 @@ export interface StoredSession extends SessionSpec {
   /** The exact user input, before steering context is added to the agent prompt. */
   requestPrompt?: string;
   opencodeId?: string;
+  /** Current turn identity for attaching clients that did not dispatch it. */
+  messageId?: string;
+  tools?: { partId: string; tool: string; status: string }[];
   status: "running" | "completed" | "failed";
   response?: string;
   diagnostic?: unknown;
