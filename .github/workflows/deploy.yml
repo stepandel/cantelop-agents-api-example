@@ -1,0 +1,60 @@
+name: Deploy
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# Serialize runs so deployments never overlap; let an in-flight deploy finish.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - name: Install the Cantelop CLI
+        run: |
+          curl -fsSL -o /tmp/install-cantelop.sh https://raw.githubusercontent.com/stepandel/homebrew-tap/main/install.sh
+          CANTELOP_NO_MODIFY_PATH=1 sh /tmp/install-cantelop.sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Validate the deployment build
+        run: cantelop deploy --dry-run
+
+  deploy:
+    if: github.event_name == 'push'
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install the Cantelop CLI
+        run: |
+          curl -fsSL -o /tmp/install-cantelop.sh https://raw.githubusercontent.com/stepandel/homebrew-tap/main/install.sh
+          CANTELOP_NO_MODIFY_PATH=1 sh /tmp/install-cantelop.sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Restore the Cantelop CLI credential
+        env:
+          CANTELOP_CREDENTIALS: ${{ secrets.CANTELOP_CREDENTIALS }}
+        run: |
+          credentials="$RUNNER_TEMP/cantelop-credentials.json"
+          install -m 600 /dev/null "$credentials"
+          printf '%s' "$CANTELOP_CREDENTIALS" > "$credentials"
+          echo "CANTELOP_CONFIG=$credentials" >> "$GITHUB_ENV"
+      - name: Deploy to Cantelop
+        run: cantelop deploy
