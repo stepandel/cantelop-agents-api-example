@@ -20,6 +20,7 @@ Issue deliveries use a deterministic actor ID per repository/issue; issue-rule
 updates use temporary actors and take the same workspace lock.
 
 - `src/api.ts`: authentication, input validation, webhook verification, dispatch, SSE.
+- `src/ui.ts`: the single-page operator console served at `GET /`.
 - `src/session.ts`: per-session Cantelop worker entry point.
 - `src/lock.ts`: cross-process workspace lock with cancellable waiting.
 - `src/worker.ts`: durable session models, issue rules, receipts and outcomes.
@@ -60,12 +61,35 @@ a string, for example `"model": "anthropic/claude-sonnet-4.5"`. Individual provi
 keys and provider selection are not supported. An unavailable model fails the turn;
 the scaffold never silently substitutes a different model.
 
+For Kimi K3, enter `moonshotai/kimi-k3` (including `ai` in the organization).
+The worker checks the exact ID against OpenCode's OpenRouter catalog before
+creating or prompting a conversation. If a session was created with a wrong ID,
+start a new session with the corrected model; follow-ups keep the original model.
+
 This is a **single trusted operator** scaffold. One API token grants access to all
 configured repositories and all session events. It does not implement per-user
 OAuth, tenant isolation, or GitHub App installation-token refresh. For repositories
 belonging to multiple unrelated users, add those boundaries before sharing access.
 The repository allowlist validates API requests, but is not a sandbox for arbitrary
 agent shell commands; scope the GitHub token accordingly.
+
+## Web console
+
+`GET /` serves a small single-page console for operating the API from a
+browser. Open `http://localhost:8787/` during `cantelop dev` or your deployed
+app URL, paste the `API_TOKEN` in **Settings**, then start a session with a
+repository, an OpenRouter model ID and a prompt. The console streams the turn
+(`status`, `text.delta`, `tool.status`, `completed` / `failed`), supports
+follow-up prompts, **Inspect** for the stored session snapshot, opening an
+existing session by ID (for example an `issue-…` session), and setting a
+per-repository GitHub issue model rule.
+
+The page embeds no secrets and requires no authentication itself; every API
+call it makes carries the token you entered as a `Bearer` header to the same
+origin. Token, defaults and the session list live in that browser's
+`localStorage` only (use **Forget token** to clear it). If the tab closes
+mid-turn, reopen the session and use **Reconnect** or **Inspect**; disconnecting
+never cancels the agent.
 
 ## API
 
@@ -116,7 +140,7 @@ the agent actually reports a verified push. There is no automatic merge.
 ## GitHub issue webhook
 
 GitHub does not include an LLM model in issue events. `GITHUB_ISSUE_MODEL` defaults
-to `anthropic/claude-sonnet-4.5` in `cantelop.json`. Set it in `.env` locally and
+to `moonshotai/kimi-k3` in `cantelop.json`. Set it in `.env` locally and
 in Cantelop for production to change the default. No repository rule is required.
 
 Optionally override the default for one repository **through the API**; wait for
@@ -188,12 +212,14 @@ messages. Live text and tool progress remain in session events rather than logs.
   HTTP 202 still means the command was dispatched, not that a new turn started.
   Inspection remains available while the workspace is locked.
 - Failed turns persist safe diagnostics: phase, process exit code/signal and
-  recognized stderr categories. Raw stderr is never logged or returned. A
+  recognized stderr categories, plus recognized provider error categories and HTTP
+  status codes. Model, authentication, credit and rate-limit failures include
+  actionable messages. Raw provider errors and stderr are never logged or returned. A
   `SIGKILL` alone does not prove OOM. Activity cancellation persists failure when
   cleanup runs, but may prevent delivery of a final event; inspect the session.
   Abrupt VM/process termination still cannot guarantee cleanup or a final write.
-- This version has no cancellation endpoint, UI,
-  automatic PR creation, or state retention cleanup.
+- This version has no cancellation endpoint, automatic PR creation, or state
+  retention cleanup. The web console only reads and dispatches through the API.
 - All sessions can see the shared filesystem. Agent instructions are guidance,
   not a security boundary. API/webhook secrets are excluded from subprocess env;
   OpenRouter and GitHub credentials must be available to the agent.

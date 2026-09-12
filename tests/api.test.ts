@@ -128,3 +128,15 @@ test("unexpected dispatch errors are logged without exception secrets", async t 
   assert.equal(JSON.parse(logs[0]!).event, "request.failed");
   assert.equal(logs.join().includes("private-"), false);
 });
+
+test("serves the operator console without authentication and without embedding secrets", async () => {
+  const h = harness();
+  const response = await h.request("/", undefined, {}, "GET");
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-type") ?? "", /^text\/html/);
+  assert.match(response.headers.get("content-security-policy") ?? "", /connect-src 'self'/);
+  const html = await response.text();
+  assert.match(html, /<title>Agent Console<\/title>/);
+  for (const secret of ["api-secret", "webhook-secret"]) assert.equal(html.includes(secret), false);
+  assert.equal(h.commands.length, 0);
+});

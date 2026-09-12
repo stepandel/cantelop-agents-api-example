@@ -1,7 +1,7 @@
 import path from "node:path";
 import { withWorkspaceLock } from "./lock.js";
 import { createHash } from "node:crypto";
-import { agentEnvironment, checkout, readJSON, runAgent, saveJSON, type Env, AgentError } from "./runtime.js";
+import { agentEnvironment, agentFailureMessage, checkout, readJSON, runAgent, saveJSON, type Env, AgentError } from "./runtime.js";
 import { issueSessionId, model, repository, sessionId, type Command, type Event, type Model, type SessionSpec, type Progress } from "./contracts.js";
 export interface StoredSession extends SessionSpec { opencodeId?: string; status: "running" | "completed" | "failed"; response?: string; diagnostic?: unknown }
 export interface Dependencies {
@@ -88,7 +88,7 @@ async function handleLocked(root: string, command: Command, messageId: string, e
     stored.diagnostic = error instanceof AgentError ? error.diagnostic : { code: signal.aborted ? "turn_cancelled" : "command_failed" };
     console.error("Agent turn failed", JSON.stringify(stored.diagnostic));
     await saveJSON(file, stored);
-    const result = event("failed", { diagnostic: stored.diagnostic, error: "Run failed. Inspect the shared checkout, provider configuration and session state before retrying. External side effects may have occurred." }, spec.sessionId);
+    const result = event("failed", { diagnostic: stored.diagnostic, error: error instanceof AgentError ? agentFailureMessage(error.diagnostic) : "Run failed. Inspect the shared checkout, provider configuration and session state before retrying. External side effects may have occurred." }, spec.sessionId);
     await saveJSON(receiptFile, { status: "failed", result });
     return result;
   }

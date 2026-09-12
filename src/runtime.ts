@@ -70,6 +70,29 @@ export interface AgentDiagnostic {
   exitCode?: number | null;
   signal?: NodeJS.Signals | null;
   stderrHints: string[];
+  reason?: "model_not_found" | "provider_auth" | "provider_api" | "output_length" | "message_aborted";
+  statusCode?: number;
+}
+export function providerDiagnostic(error: unknown): Pick<AgentDiagnostic, "reason" | "statusCode"> {
+  // SDK 1.18 wraps non-2xx JSON bodies in Error.cause; assistant errors are direct.
+  if (error instanceof Error && error.cause && typeof error.cause === "object" && "body" in error.cause) error = error.cause.body;
+  if (!error || typeof error !== "object") return {};
+  const value = error as { name?: unknown; data?: { statusCode?: unknown } };
+  if (value.name === "ProviderModelNotFoundError" || value.name === "ModelNotFoundError") return { reason: "model_not_found" };
+  if (value.name === "ProviderAuthError") return { reason: "provider_auth" };
+  if (value.name === "MessageOutputLengthError") return { reason: "output_length" };
+  if (value.name === "MessageAbortedError") return { reason: "message_aborted" };
+  if (value.name !== "APIError") return {};
+  const status = value.data?.statusCode;
+  const statusCode = typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599 ? status : undefined;
+  return { reason: statusCode === 401 || statusCode === 403 ? "provider_auth" : "provider_api", ...(statusCode === undefined ? {} : { statusCode }) };
+}
+export function agentFailureMessage(diagnostic: AgentDiagnostic): string {
+  if (diagnostic.reason === "model_not_found") return "The selected model is unavailable in OpenCode's OpenRouter catalog. Start a new session with an exact OpenRouter model ID (for Kimi K3: moonshotai/kimi-k3). If the ID is correct, check OpenCode's model catalog and configuration.";
+  if (diagnostic.reason === "provider_auth") return "OpenRouter authentication or access failed. Check the deployed OPENROUTER_API_KEY and its model permissions before retrying.";
+  if (diagnostic.statusCode === 402) return "OpenRouter rejected the request for insufficient credits. Check the account balance and key spending limit before retrying.";
+  if (diagnostic.statusCode === 429) return "OpenRouter rate-limited the request. Wait before retrying.";
+  return "Run failed. Inspect the shared checkout, provider configuration and session state before retrying. External side effects may have occurred.";
 }
 export class AgentError extends Error {
   constructor(readonly diagnostic: AgentDiagnostic) { super("OpenCode failed; see diagnostic"); }
@@ -120,8 +143,14 @@ export async function runAgent(options: {
         if (match) { clearTimeout(timeout); resolve(match[1]!); }
       });
     });
-    phase = "create_session";
     const client = createOpencodeClient({ baseUrl: url, throwOnError: true });
+    phase = "validate_model";
+    const catalog = await Promise.race([stopped, client.config.providers({ query: { directory: options.directory }, signal: options.signal })]);
+    if (!catalog.data) throw new Error("OpenCode did not return its model catalog");
+    const provider = catalog.data.providers.find(provider => provider.id === "openrouter");
+    if (!provider) throw new AgentError({ code: "opencode_failed", phase, stderrHints: [], reason: "provider_auth" });
+    if (!Object.hasOwn(provider.models, options.model)) throw new AgentError({ code: "opencode_failed", phase, stderrHints: [], reason: "model_not_found" });
+    phase = "create_session";
     let id = options.id;
     if (!id) {
       const created = await Promise.race([stopped, client.session.create({ query: { directory: options.directory }, body: { title: "Cantelop session" }, signal: options.signal })]);
@@ -141,13 +170,15 @@ export async function runAgent(options: {
         ...result.data.parts.map(part => ({ type: "message.part.updated", properties: { part } })),
       ] : [],
     });
-    if (!result.data || result.data.info.error) throw new Error("OpenCode turn failed");
+    if (!result.data) throw new Error("OpenCode turn failed");
+    if (result.data.info.error) throw result.data.info.error;
     return result.data.parts.filter(part => part.type === "text").map(part => part.text).join("\n");
-  } catch {
+  } catch (error) {
     // Let close provide the real exit status before reporting a startup failure.
     if (child.exitCode !== null || child.signalCode !== null) await exited;
     throw new AgentError({ code: options.signal.aborted ? "turn_cancelled" : "opencode_failed",
-      phase, exitCode, signal: exitSignal, stderrHints: [...hints] });
+      phase, exitCode, signal: exitSignal, stderrHints: [...hints],
+      ...(error instanceof AgentError ? { reason: error.diagnostic.reason, statusCode: error.diagnostic.statusCode } : providerDiagnostic(error)) });
   } finally {
     stderrTail = "";
     child.kill("SIGTERM");
