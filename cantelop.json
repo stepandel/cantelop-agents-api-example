@@ -7,7 +7,7 @@
     "GITHUB_TOKEN": { "secret": true, "required": true },
     "GITHUB_WEBHOOK_SECRET": { "secret": true, "required": true },
     "GITHUB_REPOSITORIES": { "required": true },
-    "GITHUB_ISSUE_MODEL": { "default": "anthropic/claude-sonnet-4.5" },
+    "GITHUB_ISSUE_MODEL": { "default": "moonshotai/kimi-k3" },
     "WORKSPACE_SLUG": { "default": "agents" },
     "OPENROUTER_API_KEY": { "secret": true, "required": true }
   }

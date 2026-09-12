@@ -135,7 +135,7 @@ the agent actually reports a verified push. There is no automatic merge.
 ## GitHub issue webhook
 
 GitHub does not include an LLM model in issue events. `GITHUB_ISSUE_MODEL` defaults
-to `anthropic/claude-sonnet-4.5` in `cantelop.json`. Set it in `.env` locally and
+to `moonshotai/kimi-k3` in `cantelop.json`. Set it in `.env` locally and
 in Cantelop for production to change the default. No repository rule is required.
 
 Optionally override the default for one repository **through the API**; wait for
