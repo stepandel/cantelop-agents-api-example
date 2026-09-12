@@ -162,6 +162,37 @@ repeat the upload step when changing production settings. Use the app URL report
 by Cantelop to open the console and repeat the first-task check with your production
 `API_TOKEN`. Set that URL as `BASE_URL` when using the API examples below.
 
+## 6. Deploy from CI
+
+The repository includes a GitHub Actions workflow (`.github/workflows/deploy.yml`)
+that validates every push and pull request, and deploys to Cantelop when master
+is updated:
+
+- The **check** job runs `npm run check` (TypeScript and the test suite) and
+  `cantelop deploy --dry-run`, which builds the API bundle and Session image
+  without logging in or creating a release.
+- The **deploy** job runs only on pushes to master, after the check job passes.
+  It restores the CLI credential and runs `cantelop deploy`. Runs are serialized,
+  so a newer push waits for an in-flight deployment to finish.
+
+Set it up once, after completing the manual deployment above:
+
+1. Run `cantelop login` locally and copy the contents of the CLI credential file
+   it created (stored with mode `0600`; `CANTELOP_CONFIG` overrides its path if
+   you need to locate it).
+2. In the repository's **Settings → Secrets and variables → Actions**, create a
+   secret named `CANTELOP_CREDENTIALS` containing the copied file contents.
+3. Push to master. The workflow writes the secret to a temporary file with mode
+   `0600`, points `CANTELOP_CONFIG` at it, and deploys. The value never appears
+   in logs.
+
+To rotate the credential, run `cantelop login` again and update the secret.
+Production environment changes (`.env` values) are still uploaded separately with
+`npm run env:upload -- APP_ID`; the workflow only deploys code. For additional
+control, you can gate the deploy job with a GitHub
+[environment](https://docs.github.com/en/actions/deployment/targeting-different-environments/using-environments-for-deployment)
+and required reviewers.
+
 ## Use the HTTP API
 
 The console and your own client use the same endpoints. All routes except `/`,
