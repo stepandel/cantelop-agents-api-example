@@ -15,6 +15,8 @@ You do not need an OpenAI API key for this implementation.
 Follow the steps below to run locally, complete your first task, and deploy to
 Cantelop. GitHub webhooks and a searchable session database are optional.
 
+<img width="2896" height="2022" alt="CleanShot 2026-09-12 at 00 10 52@2x" src="https://github.com/user-attachments/assets/b6a79d62-1ff1-436d-90d4-abb4f1e90d0d" />
+
 ## 1. Gather the prerequisites
 
 You will need:
