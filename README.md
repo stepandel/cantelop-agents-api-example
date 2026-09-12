@@ -109,7 +109,7 @@ curl http://localhost:8787/sessions/inspect \
 
 It returns `202`; the correlated `session` event contains the stored model,
 OpenCode ID, prompt, status and latest response (or `null` for an unknown session).
-Inspection takes the workspace lock and therefore waits for active work. Completion events
+Inspection reads an atomic saved snapshot without waiting for active work. Completion events
 contain the response and branch name; they do not imply a push succeeded unless
 the agent actually reports a verified push. There is no automatic merge.
 
@@ -164,8 +164,20 @@ writes occur during scaffold tests or setup.
   owning session to commit or resolve them. No automatic reset or stash occurs.
 - A completed result is persisted before posting an issue comment. A failed
   comment marks the command failed; the stored response remains available.
-- Turns have a 30-minute application timeout, also subject to Cantelop runtime
-  deadlines. This version has no live token stream, cancellation endpoint, UI,
+- Turns run as Cantelop activities with a 30-minute deadline (including time
+  waiting for the shared workspace lock). Message admission returns promptly;
+  a successful platform message receipt does not mean the coding turn completed.
+  Read the application's `completed` / `failed` events or inspect saved state.
+- Follow-ups during an active turn produce a `failed` event with
+  `data.code: "session_busy"`; they are not queued. Retry after the turn ends.
+  HTTP 202 still means the command was dispatched, not that a new turn started.
+  Inspection remains available while the workspace is locked.
+- Failed turns persist safe diagnostics: phase, process exit code/signal and
+  recognized stderr categories. Raw stderr is never logged or returned. A
+  `SIGKILL` alone does not prove OOM. Activity cancellation persists failure when
+  cleanup runs, but may prevent delivery of a final event; inspect the session.
+  Abrupt VM/process termination still cannot guarantee cleanup or a final write.
+- This version has no live token stream, cancellation endpoint, UI,
   automatic PR creation, or state retention cleanup.
 - All sessions can see the shared filesystem. Agent instructions are guidance,
   not a security boundary. API/webhook secrets are excluded from subprocess env;
@@ -187,7 +199,7 @@ mock agent/GitHub dependencies plus local Git, without live model or GitHub call
 
 API references: [OpenCode SDK](https://opencode.ai/docs/sdk/) and
 [GitHub webhook signature validation](https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries).
-Cantelop calls are checked against the installed `@cantelop/sdk@0.8.0` types.
+Cantelop calls are checked against the installed `@cantelop/sdk@0.8.1` types.
 
 ### Upgrading from the coordinator scaffold
 
@@ -213,3 +225,17 @@ access and repeated tool calls. The interactive question tool is disabled becaus
 this API has no question-answer endpoint. This does not change the container's OS
 permissions, GitHub token scopes, or repository branch protections. Repository or
 agent-specific OpenCode configuration can override global permissions.
+
+### Upload local configuration
+
+After filling in `.env`, upload its configured values with:
+
+```sh
+npm run env:upload -- app_a2d19af8c6749be1aa98227bf4165513
+```
+
+The script uses `cantelop.json` to send secrets through stdin to `cantelop app
+secret set`, and ordinary variables to `cantelop app env set`. It does not print
+values, upload undeclared settings, or overwrite remote values with blank entries.
+Missing required local settings stop the upload before any changes. Uploads are
+sequential, not atomic; retry the command if a later setting fails.

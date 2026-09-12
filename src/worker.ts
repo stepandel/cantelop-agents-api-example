@@ -1,9 +1,9 @@
 import path from "node:path";
 import { withWorkspaceLock } from "./lock.js";
 import { createHash } from "node:crypto";
-import { agentEnvironment, checkout, readJSON, runAgent, saveJSON, type Env } from "./runtime.js";
+import { agentEnvironment, checkout, readJSON, runAgent, saveJSON, type Env, AgentError } from "./runtime.js";
 import { issueSessionId, model, repository, sessionId, type Command, type Event, type Model, type SessionSpec } from "./contracts.js";
-export interface StoredSession extends SessionSpec { opencodeId?: string; status: "running" | "completed" | "failed"; response?: string }
+export interface StoredSession extends SessionSpec { opencodeId?: string; status: "running" | "completed" | "failed"; response?: string; diagnostic?: unknown }
 export interface Dependencies {
   checkout: typeof checkout;
   runAgent: typeof runAgent;
@@ -21,6 +21,7 @@ export const dependencies: Dependencies = {
   },
 };
 export async function handle(root: string, command: Command, messageId: string, env: Env, signal: AbortSignal, deps = dependencies): Promise<Event> {
+  if (command.type === "inspect") return handleLocked(root, command, messageId, env, signal, deps);
   return withWorkspaceLock(root, signal, () => handleLocked(root, command, messageId, env, signal, deps));
 }
 async function handleLocked(root: string, command: Command, messageId: string, env: Env, signal: AbortSignal, deps: Dependencies): Promise<Event> {
@@ -56,7 +57,7 @@ async function handleLocked(root: string, command: Command, messageId: string, e
   else {
     const stored = await readJSON<StoredSession>(sessionFile(command.sessionId));
     if (!stored) throw new Error("Session does not exist");
-    spec = { ...stored, prompt: command.prompt };
+    spec = { sessionId: stored.sessionId, repository: stored.repository, model: stored.model, prompt: command.prompt };
   }
   spec = { ...spec, model: model(spec.model) };
   repository(spec.repository, env.GITHUB_REPOSITORIES);
@@ -78,10 +79,12 @@ async function handleLocked(root: string, command: Command, messageId: string, e
     const result = event("completed", { response: stored.response, branch: `agent/${spec.sessionId}` }, spec.sessionId);
     await saveJSON(receiptFile, { status: "completed", result });
     return result;
-  } catch {
+  } catch (error) {
     stored.status = "failed";
+    stored.diagnostic = error instanceof AgentError ? error.diagnostic : { code: signal.aborted ? "turn_cancelled" : "command_failed" };
+    console.error("Agent turn failed", JSON.stringify(stored.diagnostic));
     await saveJSON(file, stored);
-    const result = event("failed", { error: "Run failed. Inspect the shared checkout, provider configuration and session state before retrying. External side effects may have occurred." }, spec.sessionId);
+    const result = event("failed", { diagnostic: stored.diagnostic, error: "Run failed. Inspect the shared checkout, provider configuration and session state before retrying. External side effects may have occurred." }, spec.sessionId);
     await saveJSON(receiptFile, { status: "failed", result });
     return result;
   }

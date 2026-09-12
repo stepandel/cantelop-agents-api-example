@@ -14,7 +14,7 @@ test("workspace lock excludes another process and releases after work", async t 
     const code = `import { withWorkspaceLock } from './src/lock.ts';
       try { await withWorkspaceLock(process.argv[1], AbortSignal.timeout(300), async () => { process.exitCode = 2; }); }
       catch (error) { if (error.name !== 'AbortError') throw error; }`;
-    const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", code, root], { stdio: "pipe" });
+    const child = spawn(process.execPath, [...(process.versions.bun ? [] : ["--import", "tsx"]), "--input-type=module", "-e", code, root], { stdio: "pipe" });
     let errors = "";
     child.stderr.on("data", chunk => { errors += chunk; });
     const exit = await new Promise<number | null>((resolve, reject) => { child.on("error", reject); child.on("close", resolve); });

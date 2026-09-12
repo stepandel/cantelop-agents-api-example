@@ -77,3 +77,28 @@ test("shared checkout refuses switching branches when changes remain", async t =
 test("OpenRouter key is required even when another provider key exists", () => {
   assert.throws(() => agentEnvironment("/workspace", { GITHUB_TOKEN: "test", OPENAI_API_KEY: "unused" }), /OpenRouter credentials/);
 });
+
+test("inspection remains available during work; cancellation persists failure and releases the lock", async t => {
+  const h = await harness(t);
+  const controller = new AbortController();
+  let started!: () => void;
+  const ready = new Promise<void>(resolve => { started = resolve; });
+  h.deps.runAgent = async ({ signal }) => {
+    started();
+    await new Promise((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+    return "unreachable";
+  };
+  const command: Command = { type: "create", spec: { sessionId: "cancel", repository: "owner/repo", model, prompt: "start" } };
+  const pending = handle(h.root, command, "cancel-1", env, controller.signal, h.deps);
+  await ready;
+  const live = await handle(h.root, { type: "inspect", sessionId: "cancel" }, "inspect-live", env, AbortSignal.timeout(500), h.deps);
+  assert.equal((live.data as { status: string }).status, "running");
+  controller.abort();
+  assert.equal((await pending).type, "failed");
+  const failed = await h.run({ type: "inspect", sessionId: "cancel" }, "inspect-failed");
+  assert.equal((failed.data as { diagnostic: { code: string } }).diagnostic.code, "turn_cancelled");
+  h.deps.runAgent = async () => "Recovered";
+  assert.equal((await h.run({ type: "prompt", sessionId: "cancel", prompt: "continue" }, "cancel-2")).type, "completed");
+  const recovered = await h.run({ type: "inspect", sessionId: "cancel" }, "inspect-recovered");
+  assert.equal((recovered.data as { diagnostic?: unknown }).diagnostic, undefined);
+});
