@@ -81,8 +81,8 @@ browser. Open `http://localhost:8787/` during `cantelop dev` or your deployed
 app URL, paste the `API_TOKEN` in **Settings**, then start a session with a
 repository, an OpenRouter model ID and a prompt. The console streams the turn
 (`status`, `text.delta`, `tool.status`, `completed` / `failed`), supports
-follow-up prompts with separate **Queue** and **Steer** actions, **Inspect** for
-the stored session and queue snapshot, opening an
+follow-up prompts with separate **Queue** and **Steer** actions, a **Stop** button
+for the active turn, **Inspect** for the stored session and queue snapshot, opening an
 existing session by ID (for example an `issue-…` session), and setting a
 per-repository GitHub issue model rule.
 
@@ -154,6 +154,20 @@ with `failed` and `data.code: "turn_steered"`; edits and external side effects a
 performed remain. Each queued/steering request has its own `messageId` and stream.
 A failed turn does not discard the remaining queue. An interrupted issue run does
 not post its completion comment.
+
+Stop the active turn without discarding queued messages:
+
+```sh
+curl http://localhost:8787/sessions/cancel \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"sessionId":"SESSION_ID"}'
+```
+
+The cancel request emits a terminal `cancelled` event with
+`data.cancelled: true` when it requested cancellation, or `false` when the
+session was already idle. Agent cleanup continues asynchronously. Pending queued
+messages remain saved and resume when another work message is dispatched.
 
 To retrieve durable state after reconnecting, dispatch an inspection request:
 
@@ -258,8 +272,8 @@ messages. Live text and tool progress remain in session events rather than logs.
   `SIGKILL` alone does not prove OOM. Activity cancellation persists failure when
   cleanup runs, but may prevent delivery of a final event; inspect the session.
   Abrupt VM/process termination still cannot guarantee cleanup or a final write.
-- This version has no cancellation endpoint, automatic PR creation, or state
-  retention cleanup. The web console only reads and dispatches through the API.
+- This version has no automatic PR creation or state retention cleanup. The web
+  console only reads and dispatches through the API.
 - All sessions can see the shared filesystem. Agent instructions are guidance,
   not a security boundary. API/webhook secrets are excluded from subprocess env;
   OpenRouter and GitHub credentials must be available to the agent.
@@ -350,6 +364,7 @@ Platform sandbox IDs and transport envelopes are omitted on the turn endpoint.
 | `text.replace` | Replace that block with `data.text` if OpenCode revises a snapshot. |
 | `tool.status` | Show the tool name and pending/running/completed/error state. |
 | `completed` | Use `data.response` as the authoritative final answer, not an additional delta. |
+| `cancelled` | The stop request was handled; check `data.cancelled` to see whether an active turn was interrupted. |
 | `failed` | Show the safe error/diagnostic; stop waiting. |
 
 `ignored`, `configured`, and inspection `session` events also terminate their

@@ -171,3 +171,43 @@ test("activity cancellation preserves the queue until another work request", asy
   assert.deepEqual(prompts, ["first", "second", "third"]);
   await h.until(async () => (await h.request("/runtime")).quiescent);
 });
+
+test("cancel command aborts the active turn and preserves queued messages", async t => {
+  const prompts: string[] = [];
+  let abortReason: unknown;
+  const h = await harness(t, async (_root, command, messageId, _env, signal) => {
+    if (command.type === "inspect") return { type: "session", messageId, data: { status: "failed" } };
+    if (command.type !== "prompt") throw new Error();
+    prompts.push(command.prompt);
+    if (command.prompt === "first") {
+      await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+      abortReason = signal.reason;
+      throw signal.reason;
+    }
+    return { type: "completed", messageId };
+  });
+  await h.send(1, { type: "prompt", sessionId: "one", prompt: "first" });
+  await h.until(() => prompts.length === 1);
+  await h.send(2, { type: "prompt", sessionId: "one", prompt: "second" });
+  await h.until(() => h.events.some(event => event.type === "queued" && event.messageId === h.id(2)));
+  await h.send(3, { type: "cancel", sessionId: "one" });
+  await h.until(() => h.events.some(event => event.type === "cancelled" && event.messageId === h.id(3)));
+  const cancelled = h.events.find(event => event.type === "cancelled" && event.messageId === h.id(3));
+  assert.deepEqual(cancelled.data, { cancelled: true, pendingPreserved: true });
+  assert.deepEqual(abortReason, { code: "turn_cancelled" });
+  await h.until(async () => (await h.request("/runtime")).quiescent);
+  await h.send(4, { type: "inspect", sessionId: "one" });
+  await h.until(() => h.events.some(event => event.type === "session" && event.messageId === h.id(4)));
+  const inspected = h.events.find(event => event.type === "session" && event.messageId === h.id(4));
+  assert.deepEqual(inspected.data.messages.map((job: any) => job.state), ["finished", "queued"]);
+  assert.equal(inspected.data.messages[0].result.type, "cancelled");
+  assert.equal(inspected.data.messages[0].result.data.code, "turn_cancelled");
+  await h.send(5, { type: "prompt", sessionId: "one", prompt: "third" });
+  await h.until(() => h.events.some(event => event.type === "completed" && event.messageId === h.id(5)));
+  assert.deepEqual(prompts, ["first", "second", "third"]);
+  await h.until(async () => (await h.request("/runtime")).quiescent);
+  await h.send(6, { type: "cancel", sessionId: "one" });
+  await h.until(() => h.events.some(event => event.type === "cancelled" && event.messageId === h.id(6)));
+  const idle = h.events.find(event => event.type === "cancelled" && event.messageId === h.id(6));
+  assert.deepEqual(idle.data, { cancelled: false, pendingPreserved: true });
+});

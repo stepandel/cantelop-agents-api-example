@@ -9,6 +9,13 @@ export function createBehaviour(run = handle, timeoutMs = 30 * 60 * 1000, root =
   let current: { controller: AbortController; interruptible: boolean; steering: boolean } | undefined;
   return defineSessionBehaviour<SessionCommand, Event>(async ({ message, session, env, signal, output, activity }) => {
     inbox ??= new Inbox(root, session.id);
+    if (message.payload.type === "cancel") {
+      const cancelled = activity.cancel({ code: "turn_cancelled" });
+      console.info(JSON.stringify({ component: "agent-api", event: "session.cancelled", messageId: message.id, sessionId: session.id, cancelled }));
+      await output.send({ type: "cancelled", messageId: message.id, sessionId: session.id,
+        data: { cancelled, pendingPreserved: true } });
+      return;
+    }
     if (message.payload.type === "inspect") {
       const event = await run(root, message.payload, message.id, env, signal);
       await output.send({ ...event, data: { ...(event.data as object ?? {}), messages: await inbox.snapshot() } });
@@ -69,6 +76,10 @@ export function createBehaviour(run = handle, timeoutMs = 30 * 60 * 1000, root =
           }
           if (current.controller.signal.aborted) event = { type: "failed", messageId: job.messageId, sessionId: session.id,
             data: { code: "turn_steered", error: "Interrupted by a steering message; the new instruction runs next." } };
+          else if (activitySignal.aborted && activitySignal.reason?.code === "turn_cancelled") event = {
+            type: "cancelled", messageId: job.messageId, sessionId: session.id,
+            data: { code: "turn_cancelled", pendingPreserved: true },
+          };
           current = undefined;
           await inbox.finish(job.messageId, event);
           console[event.type === "failed" ? "error" : "info"](JSON.stringify({ component: "agent-api", event: `session.${event.type}`, messageId: job.messageId, sessionId: session.id }));

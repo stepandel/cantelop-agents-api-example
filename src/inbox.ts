@@ -2,7 +2,7 @@ import path from "node:path";
 import { readJSON, saveJSON } from "./runtime.js";
 import { sessionId, type Command, type Event } from "./contracts.js";
 
-type Work = Exclude<Command, { type: "inspect" }>;
+type Work = Exclude<Command, { type: "inspect" | "cancel" }>;
 export interface Job { messageId: string; command: Work; state: "queued" | "running" | "finished"; result?: Event }
 interface State { jobs: Job[] }
 

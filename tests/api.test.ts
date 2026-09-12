@@ -140,8 +140,10 @@ test("serves the operator console without authentication and without embedding s
   assert.match(html, /<title>Agent Console<\/title>/);
   assert.match(html, /id="steer"[^>]*>Steer/);
   assert.match(html, /id="send"[^>]*>Queue/);
+  assert.match(html, /id="stop"[^>]*>[\s\S]*Stop/);
   assert.match(html, /case 'queued'/);
   assert.match(html, /prompt: prompt, mode: mode/);
+  assert.match(html, /'POST', '\/sessions\/cancel'/);
   for (const secret of ["api-secret", "webhook-secret"]) assert.equal(html.includes(secret), false);
   assert.equal(h.commands.length, 0);
 });
@@ -170,4 +172,13 @@ test("follow-up mode supports queue and steer and rejects invalid modes", async 
   for (const mode of ["interrupt", "", null, 1]) {
     assert.equal((await h.request("/sessions/messages", { sessionId: "one", prompt: "Continue", mode })).status, 400);
   }
+});
+
+test("cancel requires authentication and dispatches to the existing session actor", async () => {
+  const h = harness();
+  assert.equal((await h.request("/sessions/cancel", { sessionId: "one" }, {})).status, 401);
+  assert.equal((await h.request("/sessions/cancel", { sessionId: "../escape" })).status, 400);
+  assert.equal((await h.request("/sessions/cancel", { sessionId: "one" })).status, 202);
+  assert.deepEqual(h.commands, [{ type: "cancel", sessionId: "one" }]);
+  assert.deepEqual(h.opens.at(-1), { id: "one", workspaceSlug: "agents", keepAliveSeconds: 300 });
 });

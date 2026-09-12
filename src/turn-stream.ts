@@ -1,5 +1,5 @@
 import { readSSE } from "./sse.js";
-const terminal = new Set(["completed", "failed", "ignored", "configured", "session"]);
+const terminal = new Set(["completed", "cancelled", "failed", "ignored", "configured", "session"]);
 const allowed = new Set([...terminal, "queued", "started", "status", "text.delta", "text.replace", "tool.status"]);
 
 /** Keep the platform replay cursor, expose only app data, and close this turn. */

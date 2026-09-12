@@ -140,13 +140,13 @@ aside { border-right: 1px solid var(--line); background: var(--panel-2); display
 .dot.running { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); animation: pulse 1.6s var(--ease) infinite; }
 .dot.queued { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
 .dot.completed { background: var(--ok); }
-.dot.failed, .dot.disconnected { background: var(--bad); }
+.dot.failed, .dot.cancelled, .dot.disconnected { background: var(--bad); }
 .dot.ignored, .dot.idle { background: var(--text-3); }
 .pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; line-height: 18px; padding: 1px 8px 1px 7px; border-radius: 999px; background: var(--bg-2); color: var(--text-2); text-transform: capitalize; }
 .pill.running { background: var(--accent-soft); color: var(--accent); }
 .pill.queued { background: var(--warn-soft); color: var(--warn); }
 .pill.completed { background: var(--ok-soft); color: var(--ok); }
-.pill.failed, .pill.disconnected { background: var(--bad-soft); color: var(--bad); }
+.pill.failed, .pill.cancelled, .pill.disconnected { background: var(--bad-soft); color: var(--bad); }
 .pill.ignored { background: var(--warn-soft); color: var(--warn); }
 .pill .dot { box-shadow: none; }
 .pill.running .dot { animation: pulse 1.6s var(--ease) infinite; }
@@ -286,6 +286,7 @@ dialog::backdrop { background: rgba(20, 18, 14, .45); backdrop-filter: blur(2px)
   <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></symbol>
   <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
   <symbol id="i-send" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
   <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></symbol>
   <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="3"/></symbol>
   <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></symbol>
@@ -341,6 +342,7 @@ dialog::backdrop { background: rgba(20, 18, 14, .45); backdrop-filter: blur(2px)
         <span class="chip" id="s-issue" hidden></span>
         <button class="id-btn" id="copy-id" title="Copy session ID"><code id="s-id"></code><svg class="i"><use href="#i-copy"/></svg></button>
         <span class="spacer"></span>
+        <button class="btn ghost danger" id="stop"><svg class="i"><use href="#i-stop"/></svg><span class="t">Stop</span></button>
         <button class="btn ghost" id="inspect"><svg class="i"><use href="#i-eye"/></svg><span class="t">Inspect</span></button>
         <button class="btn ghost danger" id="forget" title="Forget this browser's copy of the transcript"><svg class="i"><use href="#i-trash"/></svg><span class="t">Forget</span></button>
       </div>
@@ -392,7 +394,7 @@ dialog::backdrop { background: rgba(20, 18, 14, .45); backdrop-filter: blur(2px)
   var $ = function (id) { return document.getElementById(id); };
   var state = load();
   var current = null;
-  var active = {}; // sessionId:messageId -> true while a stream is attached in this tab
+  var active = {}; // sessionId:messageId -> AbortController while a stream is attached in this tab
   var BT = '\x60';
 
   function load() {
@@ -492,11 +494,12 @@ dialog::backdrop { background: rgba(20, 18, 14, .45); backdrop-filter: blur(2px)
     }
   }
   // Streams one request until its terminal event; resumes with Last-Event-ID on interruption.
-  async function streamRequest(url, onEvent, onGiveUp) {
+  async function streamRequest(url, onEvent, onGiveUp, signal) {
     var lastId = '';
     for (var attempt = 0; attempt < 6; attempt++) {
+      if (signal && signal.aborted) return false;
       try {
-        var res = await fetch(url, { headers: headers(lastId ? { 'last-event-id': lastId } : {}) });
+        var res = await fetch(url, { headers: headers(lastId ? { 'last-event-id': lastId } : {}), signal: signal });
         if (!res.ok || !res.body) throw new Error('HTTP ' + res.status);
         var terminal = await readEvents(res.body, function (frame) {
           if (frame.id) lastId = frame.id;
@@ -504,7 +507,7 @@ dialog::backdrop { background: rgba(20, 18, 14, .45); backdrop-filter: blur(2px)
           return onEvent(payload) === true;
         });
         if (terminal) return true;
-      } catch (e) { if (attempt === 5) { onGiveUp(e); return false; } }
+      } catch (e) { if (signal && signal.aborted) return false; if (attempt === 5) { onGiveUp(e); return false; } }
       await new Promise(function (r) { setTimeout(r, 1000 * (attempt + 1)); });
     }
     onGiveUp(new Error('Stream ended without a terminal event'));
@@ -729,7 +732,7 @@ dialog::backdrop { background: rgba(20, 18, 14, .45); backdrop-filter: blur(2px)
     }
     if (t.status === 'disconnected') return 'Stream interrupted. The agent may still be running.';
     var took = t.finishedAt && t.startedAt ? ' in ' + Math.max(1, Math.round((t.finishedAt - t.startedAt) / 1000)) + 's' : '';
-    return { completed: 'Turn finished' + took, failed: 'Turn failed' + took, ignored: 'Turn ignored' }[t.status] || t.status;
+    return { completed: 'Turn finished' + took, cancelled: 'Turn stopped' + took, failed: 'Turn failed' + took, ignored: 'Turn ignored' }[t.status] || t.status;
   }
   function groupTools(list) {
     var groups = [], byName = {};
@@ -766,6 +769,7 @@ dialog::backdrop { background: rgba(20, 18, 14, .45); backdrop-filter: blur(2px)
       fin.innerHTML = '<div class="result failed"><div class="body plain">' + esc(t.error || 'Run failed.') + '</div>' +
         (t.diagnostic ? '<details class="diag"><summary>' + icon('chevron') + 'Diagnostic details</summary><pre>' + esc(JSON.stringify(t.diagnostic, null, 2)) + '</pre></details>' : '') + '</div>';
     }
+    if (t.status === 'cancelled') fin.innerHTML = '<div class="result failed"><div class="body plain">Stopped by the operator. Queued messages were preserved.</div></div>';
     if (t.status === 'ignored') fin.innerHTML = '<div class="result ignored"><div class="body plain">Ignored: ' + esc(t.reason || '') + '</div></div>';
   }
   function repaint(s, t) {
@@ -795,6 +799,7 @@ dialog::backdrop { background: rgba(20, 18, 14, .45); backdrop-filter: blur(2px)
         break;
       }
       case 'completed': t.status = 'completed'; t.response = d.response; t.branch = d.branch; break;
+      case 'cancelled': t.status = 'cancelled'; break;
       case 'failed': t.status = 'failed'; t.error = d.error; t.diagnostic = d.diagnostic || (d.code ? { code: d.code } : undefined); break;
       case 'ignored': t.status = 'ignored'; t.reason = d.reason; break;
       default: return false;
@@ -808,9 +813,10 @@ dialog::backdrop { background: rgba(20, 18, 14, .45); backdrop-filter: blur(2px)
   var saveTimer = null;
   function throttleSave() { if (saveTimer) return; saveTimer = setTimeout(function () { saveTimer = null; save(); }, 500); }
   function attach(s, t) {
-    var key = s.id + ':' + t.messageId; if (active[key]) return; active[key] = true;
-    streamRequest(t.stream, function (p) { return applyEvent(s, t, p); }, function () { t.status = 'disconnected'; save(); repaint(s, t); renderSidebar(); })
-      .then(function () { delete active[key]; });
+    var key = s.id + ':' + t.messageId; if (active[key]) return;
+    var controller = new AbortController(); active[key] = controller;
+    streamRequest(t.stream, function (p) { return applyEvent(s, t, p); }, function () { t.status = 'disconnected'; save(); repaint(s, t); renderSidebar(); }, controller.signal)
+      .then(function () { if (active[key] === controller) delete active[key]; });
   }
   function newTurn(prompt, accepted, mode) {
     return { messageId: accepted.messageId, prompt: prompt, stream: accepted.stream, status: 'running', mode: mode || 'queue', phase: '', blocks: [], tools: [], startedAt: Date.now() };
@@ -847,6 +853,30 @@ dialog::backdrop { background: rgba(20, 18, 14, .45); backdrop-filter: blur(2px)
   $('send').onclick = function () { sendFollowup('queue'); };
   $('steer').onclick = function () { sendFollowup('steer'); };
   $('followup').onkeydown = function (e) { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') sendFollowup(e.shiftKey ? 'steer' : 'queue'); };
+  $('stop').onclick = async function () {
+    var s = session(current); if (!s) return;
+    $('stop').disabled = true; $('send-error').textContent = '';
+    try {
+      var accepted = await call('POST', '/sessions/cancel', { sessionId: s.id });
+      await streamRequest(accepted.stream, function (p) {
+        if (p.type === 'cancelled') {
+          if (p.data && p.data.cancelled) {
+            s.turns.forEach(function (t) {
+              if (t.status !== 'running' && t.status !== 'disconnected') return;
+              var key = s.id + ':' + t.messageId, controller = active[key];
+              if (controller) controller.abort();
+              t.status = 'cancelled'; t.finishedAt = Date.now(); repaint(s, t);
+            });
+            save(); renderSidebar(); toast('Active turn stopped; queued messages preserved');
+          } else toast('No active turn to stop');
+          return true;
+        }
+        if (p.type === 'failed') { $('send-error').textContent = p.data && p.data.error || 'Could not stop the turn'; return true; }
+        return false;
+      }, function (err) { $('send-error').textContent = 'Stop request failed: ' + err.message; });
+    } catch (err) { $('send-error').textContent = err.message; }
+    $('stop').disabled = false;
+  };
   $('prompt').onkeydown = function (e) { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') $('create-form').requestSubmit(); };
   $('new-session').onclick = function () { showNew(); closeDrawer(); $('repository').focus(); };
   $('menu').onclick = function () { if ($('sidebar').classList.contains('open')) closeDrawer(); else openDrawer(); };

@@ -42,6 +42,15 @@ test("disconnect cancels a pending upstream read", async () => {
   assert.equal(cancelled, true);
 });
 
+test("cancelled is a terminal turn event", async () => {
+  let cancelled = false;
+  const data = JSON.stringify({ message_id: "owner", data: { type: "cancelled", messageId: "wanted", data: { cancelled: true } } });
+  const source = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(encode.encode(`id: 1\ndata: ${data}\n\n`)); }, cancel() { cancelled = true; } });
+  const output = await turnStream(new Response(source), "wanted").text();
+  assert.match(output, /event: cancelled/);
+  assert.equal(cancelled, true);
+});
+
 test("OpenCode mapping isolates assistant text, suppresses snapshot duplicates and sanitizes tool progress", () => {
   const map = new OpenCodeProgress("session");
   const updated = (part: unknown) => ({ type: "message.part.updated", properties: { part } });

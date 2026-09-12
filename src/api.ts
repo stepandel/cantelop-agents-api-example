@@ -129,6 +129,10 @@ export const createApi = (databaseFactory = sessionDatabase) => defineApi<Comman
     if (v.mode !== undefined && v.mode !== "queue" && v.mode !== "steer") throw new TypeError("Invalid message mode");
     return dispatch({ type: "prompt", sessionId: sessionId(v.sessionId), prompt: text(v.prompt, "prompt"), mode: v.mode as "queue" | "steer" | undefined });
   });
+  route("POST", "/sessions/cancel", true, async request => {
+    const v = await body(request);
+    return dispatch({ type: "cancel", sessionId: sessionId(v.sessionId) });
+  });
   route("POST", "/sessions/inspect", true, async request => {
     const v = await body(request);
     return dispatch({ type: "inspect", sessionId: sessionId(v.sessionId) });

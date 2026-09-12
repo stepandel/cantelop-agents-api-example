@@ -24,6 +24,7 @@ export const dependencies: Dependencies = {
   },
 };
 export async function handle(root: string, command: Command, messageId: string, env: Env, signal: AbortSignal, deps = dependencies, emit: (event: Event) => Promise<void> = async () => {}): Promise<Event> {
+  if (command.type === "cancel") throw new Error("Cancel commands are handled by the session runtime");
   if (command.type === "reindex") {
     const database = (deps.sessionDatabase ?? sessionDatabase)(env);
     if (!database) throw new Error("Session database is not configured");
@@ -34,7 +35,7 @@ export async function handle(root: string, command: Command, messageId: string, 
   await emit({ type: "status", messageId, data: { phase: "waiting_for_workspace" } });
   return withWorkspaceLock(root, signal, () => handleLocked(root, command, messageId, env, signal, deps, emit));
 }
-async function handleLocked(root: string, command: Exclude<Command, { type: "reindex" }>, messageId: string, env: Env, signal: AbortSignal, deps: Dependencies, emit: (event: Event) => Promise<void>): Promise<Event> {
+async function handleLocked(root: string, command: Exclude<Command, { type: "reindex" | "cancel" }>, messageId: string, env: Env, signal: AbortSignal, deps: Dependencies, emit: (event: Event) => Promise<void>): Promise<Event> {
   const state = path.join(root, ".agent-api");
   const sessionFile = (id: string) => path.join(state, "sessions", `${sessionId(id)}.json`);
   const rulesFile = path.join(state, "issue-rules.json");

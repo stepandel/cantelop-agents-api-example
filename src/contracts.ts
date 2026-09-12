@@ -5,12 +5,13 @@ export type Command =
   | { type: "reindex" }
   | { type: "create"; spec: SessionSpec }
   | { type: "prompt"; sessionId: string; prompt: string; mode?: "queue" | "steer" }
+  | { type: "cancel"; sessionId: string }
   | { type: "inspect"; sessionId: string }
   | { type: "rule"; repository: string; model: Model }
   | { type: "issue"; deliveryId: string; issue: Issue };
 export type Progress = { type: "queued" | "started" | "status" | "text.delta" | "text.replace" | "tool.status"; data: unknown };
 export interface Event {
-  type: "completed" | "failed" | "ignored" | "configured" | "session" | Progress["type"];
+  type: "completed" | "cancelled" | "failed" | "ignored" | "configured" | "session" | Progress["type"];
   messageId: string;
   sessionId?: string;
   data?: unknown;
