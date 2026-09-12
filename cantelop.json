@@ -9,6 +9,8 @@
     "GITHUB_REPOSITORIES": { "required": true },
     "GITHUB_ISSUE_MODEL": { "default": "anthropic/claude-sonnet-4.5" },
     "WORKSPACE_SLUG": { "default": "agents" },
+    "SESSION_DATABASE_URL": {},
+    "SESSION_DATABASE_AUTH_TOKEN": { "secret": true },
     "OPENROUTER_API_KEY": { "secret": true, "required": true }
   }
 }

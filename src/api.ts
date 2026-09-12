@@ -1,3 +1,4 @@
+import { sessionDatabase, parseSessionQuery, type SessionDatabase } from "./session-db.js";
 import { turnStream } from "./turn-stream.js";
 import { defineApi } from "@cantelop/sdk/api";
 import { issueSessionId, model, object, repository, sessionId, text, type Command } from "./contracts.js";
@@ -45,7 +46,7 @@ async function bodyBytes(request: Request): Promise<Uint8Array> {
   for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
   return bytes;
 }
-export default defineApi<Command>(({ app, env, router }) => {
+export const createApi = (databaseFactory = sessionDatabase) => defineApi<Command>(({ app, env, router }) => {
   const worker = (id: string) => app.sessions.open({ id, workspaceSlug: env.WORKSPACE_SLUG ?? "agents", keepAliveSeconds: 300 });
   async function dispatch(command: Command) {
     const id = command.type === "create" ? command.spec.sessionId
@@ -91,6 +92,28 @@ export default defineApi<Command>(({ app, env, router }) => {
     if (!/^msg_[a-f0-9]{32}$/.test(messageId)) throw new TypeError("Invalid messageId");
     return turnStream(await worker(id).events(request), messageId);
   });
+  const readDatabase = async <T>(read: (db: SessionDatabase) => Promise<T>): Promise<T> => {
+    try {
+      const db = databaseFactory(env);
+      if (!db) throw new Error("Session database is not configured");
+      return await read(db);
+    } catch {
+      // SDK/network failures may be TypeErrors and contain connection details.
+      throw new Error("Session database unavailable");
+    }
+  };
+  const queryResponse = (value: unknown, status = 200) => Response.json(value, { status, headers: { "cache-control": "no-store" } });
+  route("GET", "/sessions", true, async request => {
+    const params = new URL(request.url).searchParams;
+    const query = parseSessionQuery(params);
+    if (params.has("repository")) query.repository = repository(params.get("repository"), env.GITHUB_REPOSITORIES);
+    return queryResponse(await readDatabase(db => db.list(query)));
+  });
+  route("GET", "/sessions/inspect", true, async request => {
+    const id = sessionId(new URL(request.url).searchParams.get("sessionId"));
+    const session = await readDatabase(db => db.get(id));
+    return session ? queryResponse({ session }) : queryResponse({ error: "Session not found" }, 404);
+  });
   route("POST", "/sessions", true, async request => {
     const v = await body(request);
     return dispatch({ type: "create", spec: { sessionId: crypto.randomUUID(), repository: repository(v.repository, env.GITHUB_REPOSITORIES), model: model(v.model), prompt: text(v.prompt, "prompt") } });
@@ -125,3 +148,5 @@ export default defineApi<Command>(({ app, env, router }) => {
     return dispatch({ type: "issue", deliveryId: text(request.headers.get("x-github-delivery"), "delivery ID", 100), issue: { repository: repo, number: Number(issue.number), title: text(issue.title, "title", 1000), body: issue.body == null || issue.body === "" ? "" : text(issue.body, "body"), association } });
   });
 });
+
+export default createApi();

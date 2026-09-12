@@ -297,3 +297,96 @@ Close browser EventSource clients on terminal events to prevent automatic
 reconnection. Fetch streaming is convenient for clients using Bearer headers.
 An EOF without a terminal event is a transport interruption, not successful work.
 The original `/events` endpoint remains an unmodified session-wide stream.
+
+## Querying sessions from clients
+
+An optional shared libSQL database (for example, Turso) indexes session snapshots
+for direct HTTP reads from the Edge API. Configure the **same** database URL,
+auth token and `WORKSPACE_SLUG` for the API, workers and setup command:
+
+```dotenv
+SESSION_DATABASE_URL=libsql://YOUR-DATABASE.turso.io
+SESSION_DATABASE_AUTH_TOKEN=YOUR-DATABASE-TOKEN
+```
+
+The implementation uses the HTTP-compatible [`@libsql/client/web` client](https://docs.turso.tech/sdk/http/quickstart),
+so the database must be reachable over the network from both runtimes. A local
+`file:` URL cannot be used by the Edge API. Each workspace has a separate index;
+use a dedicated database per app, or distinct workspace slugs if sharing one.
+Database credentials are excluded from the agent subprocess environment.
+
+Create a database with your provider, set these variables in `.env`, then run:
+
+```sh
+npm run db:setup
+```
+
+This idempotently creates the table and indexes. Upload the two variables using
+`npm run env:upload -- APP_ID` and deploy as usual. No database is provisioned or
+deployed automatically. Without `SESSION_DATABASE_URL`, existing POST/SSE flows
+continue to work and the new GET routes return `503`.
+
+List session summaries (including API-created and GitHub issue sessions):
+
+```sh
+curl -G http://localhost:8787/sessions \
+  -H "Authorization: Bearer $API_TOKEN" \
+  --data-urlencode 'repository=alice/app' \
+  --data-urlencode 'status=completed' \
+  --data-urlencode 'limit=20'
+```
+
+The response is `{ "sessions": [...], "nextCursor": "..." }`. Each summary contains
+`sessionId`, `repository`, `model`, `status`, `promptPreview` (up to 200 characters),
+`createdAt`, and `updatedAt`. Results sort by creation time descending, then session
+ID descending. `repository` and `status` are optional; status is `running`,
+`completed`, or `failed`. `limit` defaults to 50 and must be between 1 and 100.
+Pass `nextCursor` as the URL-encoded `cursor` parameter with the same filters to
+continue; `null` means no more results. Pagination is a live view, so status-filtered
+results can change as turns finish.
+
+Fetch the complete indexed snapshot, including the latest prompt, response,
+OpenCode conversation ID and safe failure diagnostics:
+
+```sh
+curl -G http://localhost:8787/sessions/inspect \
+  -H "Authorization: Bearer $API_TOKEN" \
+  --data-urlencode 'sessionId=SESSION_ID'
+```
+
+This returns `200` with `{ "session": {...} }`, or `404` for an ID not yet indexed.
+Both GET routes require the existing operator Bearer token, disable response
+caching, and return `400` for invalid queries or `503` when the database is
+unconfigured/unavailable. No actor dispatch or SSE subscription is needed.
+The existing `POST /sessions/inspect` still reads the durable workspace snapshot.
+
+### Index timing, migration and recovery
+
+Workspace JSON snapshots remain the recovery source. The worker writes JSON
+first and then updates SQL at turn start, OpenCode conversation creation, completion
+and failure. A session first becomes queryable after it acquires the workspace
+lock and saves its running state; HTTP `202` does not imply it is already indexed.
+Follow-ups update the same row and preserve the creation time. Streaming deltas
+and per-turn history are not stored in the query index.
+
+To import existing sessions or repair stale SQL rows after a database outage,
+run the following **where the durable workspace is mounted**, with the same
+configuration and this project's dependencies installed:
+
+```sh
+npm run db:setup -- /workspace
+```
+
+Backfill acquires the existing workspace lock, reads `.agent-api/sessions/*.json`,
+and upserts them without running agents or reposting issue comments. It can be
+safely rerun; older snapshots cannot overwrite newer indexed updates. Legacy
+snapshots without timestamps use file modification time as an approximation and
+save it for subsequent runs.
+
+JSON and SQL are not one transaction. If SQL fails, the turn fails and the local
+snapshot remains inspectable; an index write failure before checkout prevents
+agent side effects, while a later failure cannot undo effects already performed.
+The database may continue to show the last successfully indexed status until
+backfill repairs it. Restore database connectivity and inspect the workspace
+before retrying agent work. Abrupt process termination can still leave a session
+marked `running`, as in the original receipt model.

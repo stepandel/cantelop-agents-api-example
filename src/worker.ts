@@ -3,8 +3,10 @@ import { withWorkspaceLock } from "./lock.js";
 import { createHash } from "node:crypto";
 import { agentEnvironment, checkout, readJSON, runAgent, saveJSON, type Env, AgentError } from "./runtime.js";
 import { issueSessionId, model, repository, sessionId, type Command, type Event, type Model, type SessionSpec, type Progress } from "./contracts.js";
-export interface StoredSession extends SessionSpec { opencodeId?: string; status: "running" | "completed" | "failed"; response?: string; diagnostic?: unknown }
+import { sessionDatabase, type SessionDatabase, type StoredSession } from "./session-db.js";
+export type { StoredSession } from "./session-db.js";
 export interface Dependencies {
+  sessionDatabase?: (env: Env) => SessionDatabase | undefined;
   checkout: typeof checkout;
   runAgent: typeof runAgent;
   comment: (repository: string, number: number, body: string, env: Env, signal: AbortSignal) => Promise<void>;
@@ -62,23 +64,31 @@ async function handleLocked(root: string, command: Command, messageId: string, e
   }
   spec = { ...spec, model: model(spec.model) };
   repository(spec.repository, env.GITHUB_REPOSITORIES);
+  const database = (deps.sessionDatabase ?? sessionDatabase)(env);
   const file = sessionFile(spec.sessionId);
   const previous = await readJSON<StoredSession>(file);
   if (command.type === "create" && previous) throw new Error("Session already exists");
-  const stored: StoredSession = { ...spec, opencodeId: previous?.opencodeId, status: "running" };
+  const stored: StoredSession = { ...spec, opencodeId: previous?.opencodeId, status: "running", createdAt: previous?.createdAt ?? new Date().toISOString(), updatedAt: previous?.updatedAt };
+  const saveSession = async () => {
+    const lastUpdate = stored.updatedAt ? Date.parse(stored.updatedAt) : 0;
+    stored.updatedAt = new Date(Math.max(Date.now(), lastUpdate + 1)).toISOString();
+    // Keep the durable workspace snapshot for inspection and database repair.
+    await saveJSON(file, stored);
+    await database?.save(stored);
+  };
   await saveJSON(receiptFile, { status: "started", sessionId: spec.sessionId });
   try {
-    await saveJSON(file, stored);
+    await saveSession();
     await emit(event("status", { phase: "checkout" }, spec.sessionId));
     const agentEnv = agentEnvironment(root, env);
     const directory = await deps.checkout(root, spec.repository, spec.sessionId, agentEnv, signal);
     await emit(event("status", { phase: "agent_starting" }, spec.sessionId));
     stored.response = await deps.runAgent({ root, directory, env: agentEnv, model: stored.model, prompt: spec.prompt, id: stored.opencodeId, signal,
       onProgress: (progress: Progress) => emit(event(progress.type, progress.data, spec.sessionId)),
-      onCreated: async id => { stored.opencodeId = id; await saveJSON(file, stored); },
+      onCreated: async id => { stored.opencodeId = id; await saveSession(); },
     });
     stored.status = "completed";
-    await saveJSON(file, stored);
+    await saveSession();
     if (command.type === "issue") await deps.comment(spec.repository, command.issue.number, `Cantelop session \`${spec.sessionId}\`\n\n${stored.response || "The agent completed without a summary; inspect the session."}`, env, signal);
     const result = event("completed", { response: stored.response, branch: `agent/${spec.sessionId}` }, spec.sessionId);
     await saveJSON(receiptFile, { status: "completed", result });
@@ -87,7 +97,7 @@ async function handleLocked(root: string, command: Command, messageId: string, e
     stored.status = "failed";
     stored.diagnostic = error instanceof AgentError ? error.diagnostic : { code: signal.aborted ? "turn_cancelled" : "command_failed" };
     console.error("Agent turn failed", JSON.stringify(stored.diagnostic));
-    await saveJSON(file, stored);
+    await saveSession();
     const result = event("failed", { diagnostic: stored.diagnostic, error: "Run failed. Inspect the shared checkout, provider configuration and session state before retrying. External side effects may have occurred." }, spec.sessionId);
     await saveJSON(receiptFile, { status: "failed", result });
     return result;
