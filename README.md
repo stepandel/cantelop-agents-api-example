@@ -61,6 +61,11 @@ a string, for example `"model": "anthropic/claude-sonnet-4.5"`. Individual provi
 keys and provider selection are not supported. An unavailable model fails the turn;
 the scaffold never silently substitutes a different model.
 
+For Kimi K3, enter `moonshotai/kimi-k3` (including `ai` in the organization).
+The worker checks the exact ID against OpenCode's OpenRouter catalog before
+creating or prompting a conversation. If a session was created with a wrong ID,
+start a new session with the corrected model; follow-ups keep the original model.
+
 This is a **single trusted operator** scaffold. One API token grants access to all
 configured repositories and all session events. It does not implement per-user
 OAuth, tenant isolation, or GitHub App installation-token refresh. For repositories
@@ -207,7 +212,9 @@ messages. Live text and tool progress remain in session events rather than logs.
   HTTP 202 still means the command was dispatched, not that a new turn started.
   Inspection remains available while the workspace is locked.
 - Failed turns persist safe diagnostics: phase, process exit code/signal and
-  recognized stderr categories. Raw stderr is never logged or returned. A
+  recognized stderr categories, plus recognized provider error categories and HTTP
+  status codes. Model, authentication, credit and rate-limit failures include
+  actionable messages. Raw provider errors and stderr are never logged or returned. A
   `SIGKILL` alone does not prove OOM. Activity cancellation persists failure when
   cleanup runs, but may prevent delivery of a final event; inspect the session.
   Abrupt VM/process termination still cannot guarantee cleanup or a final write.
