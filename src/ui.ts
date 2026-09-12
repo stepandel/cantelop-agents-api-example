@@ -123,11 +123,13 @@ aside { border-right: 1px solid var(--line); background: var(--panel-2); display
 
 /* Status vocabulary */
 .dot.running { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); animation: pulse 1.6s var(--ease) infinite; }
+.dot.queued { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
 .dot.completed { background: var(--ok); }
 .dot.failed, .dot.disconnected { background: var(--bad); }
 .dot.ignored, .dot.idle { background: var(--text-3); }
 .pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; line-height: 18px; padding: 1px 8px 1px 7px; border-radius: 999px; background: var(--bg-2); color: var(--text-2); text-transform: capitalize; }
 .pill.running { background: var(--accent-soft); color: var(--accent); }
+.pill.queued { background: var(--warn-soft); color: var(--warn); }
 .pill.completed { background: var(--ok-soft); color: var(--ok); }
 .pill.failed, .pill.disconnected { background: var(--bad-soft); color: var(--bad); }
 .pill.ignored { background: var(--warn-soft); color: var(--warn); }
@@ -220,6 +222,8 @@ details.diag pre { margin: 0; padding: 12px 16px; font-size: 12px; line-height: 
 .composer-foot { display: flex; align-items: center; gap: 12px; padding: 6px 8px 8px 14px; }
 .composer-foot .error { flex: 1; }
 .composer-foot .kbd-hint { margin-left: auto; }
+.btn.steer { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--line-2)); background: var(--warn-soft); }
+.btn.steer:hover { border-color: var(--warn); }
 
 /* Dialogs */
 dialog { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); color: var(--text); padding: 0; width: min(560px, 92vw); box-shadow: var(--shadow-lg); }
@@ -319,8 +323,8 @@ dialog::backdrop { background: rgba(20, 18, 14, .45); backdrop-filter: blur(2px)
       <div class="transcript" id="transcript-scroll"><div class="transcript-inner" id="transcript"></div></div>
       <div class="composer">
         <div class="composer-box">
-          <textarea id="followup" rows="2" placeholder="Send a follow-up prompt to this session…" aria-label="Follow-up prompt"></textarea>
-          <div class="composer-foot"><span class="error" id="send-error" role="alert"></span><span class="kbd-hint"><kbd>⌘</kbd><kbd>↵</kbd></span><button class="btn primary small" id="send">Send<svg class="i"><use href="#i-send"/></svg></button></div>
+          <textarea id="followup" rows="2" placeholder="Add an instruction to this session…" aria-label="Follow-up prompt"></textarea>
+          <div class="composer-foot"><span class="error" id="send-error" role="alert"></span><span class="hint">Queue waits. Steer interrupts.</span><span class="kbd-hint"><kbd>⌘</kbd><kbd>↵</kbd></span><button class="btn steer small" id="steer" type="button" title="Interrupt the active turn and run this next">Steer</button><button class="btn primary small" id="send" type="button" title="Run after earlier messages">Queue<svg class="i"><use href="#i-send"/></svg></button></div>
         </div>
       </div>
     </section>
@@ -364,7 +368,7 @@ dialog::backdrop { background: rgba(20, 18, 14, .45); backdrop-filter: blur(2px)
   var $ = function (id) { return document.getElementById(id); };
   var state = load();
   var current = null;
-  var active = {}; // sessionId -> true while a stream is attached in this tab
+  var active = {}; // sessionId:messageId -> true while a stream is attached in this tab
   var BT = '\x60';
 
   function load() {
@@ -527,7 +531,7 @@ dialog::backdrop { background: rgba(20, 18, 14, .45); backdrop-filter: blur(2px)
     $('send-error').textContent = '';
     renderTranscript(s);
     renderSidebar();
-    s.turns.forEach(function (t) { if (t.status === 'running' && !active[id + ':' + t.messageId] && t.stream) attach(s, t); });
+    s.turns.forEach(function (t) { if ((t.status === 'running' || t.status === 'queued') && !active[id + ':' + t.messageId] && t.stream) attach(s, t); });
   }
 
   // ---------- Turns ----------
@@ -544,6 +548,7 @@ dialog::backdrop { background: rgba(20, 18, 14, .45); backdrop-filter: blur(2px)
     return d;
   }
   function phaseText(t) {
+    if (t.status === 'queued') return t.mode === 'steer' ? 'Steering — waiting for the active turn to stop' : 'Queued — waiting for earlier messages';
     if (t.status === 'running') {
       if (!t.phase) return 'Dispatched — waiting for the session to start';
       return { started: 'Session started', waiting_for_workspace: 'Waiting for the shared workspace lock', checkout: 'Checking out the repository', agent_starting: 'Starting the agent', working: 'Agent is working' }[t.phase] || t.phase;
@@ -599,8 +604,9 @@ dialog::backdrop { background: rgba(20, 18, 14, .45); backdrop-filter: blur(2px)
   function applyEvent(s, t, p) {
     var d = p.data || {};
     switch (p.type) {
-      case 'started': t.phase = t.phase || 'started'; break;
-      case 'status': t.phase = d.phase; break;
+      case 'queued': t.status = 'queued'; t.mode = d.mode || t.mode || 'queue'; break;
+      case 'started': t.status = 'running'; t.phase = t.phase || 'started'; break;
+      case 'status': t.status = 'running'; t.phase = d.phase; break;
       case 'text.delta': case 'text.replace': {
         t.phase = 'working';
         var b = null; for (var i = 0; i < t.blocks.length; i++) if (t.blocks[i].partId === d.partId) b = t.blocks[i];
@@ -619,7 +625,7 @@ dialog::backdrop { background: rgba(20, 18, 14, .45); backdrop-filter: blur(2px)
       case 'ignored': t.status = 'ignored'; t.reason = d.reason; break;
       default: return false;
     }
-    var terminal = t.status !== 'running';
+    var terminal = t.status !== 'running' && t.status !== 'queued';
     if (terminal && !t.finishedAt) t.finishedAt = Date.now();
     if (terminal || p.type === 'status' || p.type === 'tool.status') save(); else throttleSave();
     repaint(s, t); if (terminal) renderSidebar();
@@ -632,8 +638,8 @@ dialog::backdrop { background: rgba(20, 18, 14, .45); backdrop-filter: blur(2px)
     streamRequest(t.stream, function (p) { return applyEvent(s, t, p); }, function () { t.status = 'disconnected'; save(); repaint(s, t); renderSidebar(); })
       .then(function () { delete active[key]; });
   }
-  function newTurn(prompt, accepted) {
-    return { messageId: accepted.messageId, prompt: prompt, stream: accepted.stream, status: 'running', phase: '', blocks: [], tools: [], startedAt: Date.now() };
+  function newTurn(prompt, accepted, mode) {
+    return { messageId: accepted.messageId, prompt: prompt, stream: accepted.stream, status: 'running', mode: mode || 'queue', phase: '', blocks: [], tools: [], startedAt: Date.now() };
   }
 
   // ---------- Actions ----------
@@ -653,19 +659,20 @@ dialog::backdrop { background: rgba(20, 18, 14, .45); backdrop-filter: blur(2px)
     } catch (err) { $('create-error').textContent = err.message; }
     $('create-btn').disabled = false;
   };
-  async function sendFollowup() {
+  async function sendFollowup(mode) {
     var s = session(current); if (!s) return;
     var prompt = $('followup').value; if (!prompt.trim()) return;
-    $('send-error').textContent = ''; $('send').disabled = true;
+    $('send-error').textContent = ''; $('send').disabled = true; $('steer').disabled = true;
     try {
-      var accepted = await call('POST', '/sessions/messages', { sessionId: s.id, prompt: prompt });
-      var t = newTurn(prompt, accepted); s.turns.push(t); save();
+      var accepted = await call('POST', '/sessions/messages', { sessionId: s.id, prompt: prompt, mode: mode });
+      var t = newTurn(prompt, accepted, mode); s.turns.push(t); save();
       $('followup').value = ''; repaint(s, t); attach(s, t); renderSidebar();
     } catch (err) { $('send-error').textContent = err.message; }
-    $('send').disabled = false;
+    $('send').disabled = false; $('steer').disabled = false;
   }
-  $('send').onclick = sendFollowup;
-  $('followup').onkeydown = function (e) { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') sendFollowup(); };
+  $('send').onclick = function () { sendFollowup('queue'); };
+  $('steer').onclick = function () { sendFollowup('steer'); };
+  $('followup').onkeydown = function (e) { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') sendFollowup(e.shiftKey ? 'steer' : 'queue'); };
   $('prompt').onkeydown = function (e) { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') $('create-form').requestSubmit(); };
   $('new-session').onclick = function () { showNew(); closeDrawer(); $('repository').focus(); };
   $('menu').onclick = function () { if ($('sidebar').classList.contains('open')) closeDrawer(); else openDrawer(); };
@@ -694,8 +701,15 @@ dialog::backdrop { background: rgba(20, 18, 14, .45); backdrop-filter: blur(2px)
         if (open) $('inspect-body').textContent = d ? JSON.stringify(d, null, 2) : 'Unknown session (no stored state on the server).';
         if (d) {
           if (d.repository) s.repository = d.repository; if (d.model) s.model = d.model;
-          if (!s.turns.length && d.prompt) s.turns.push({ messageId: 'stored', prompt: d.prompt, status: d.status === 'running' ? 'disconnected' : d.status, phase: '', blocks: [], tools: [], response: d.response, error: d.status === 'failed' ? 'Run failed (from stored state).' : undefined, diagnostic: d.diagnostic, branch: 'agent/' + s.id });
+          if (!s.turns.length && d.prompt) s.turns.push({ messageId: 'stored', prompt: d.requestPrompt || d.prompt, status: d.status === 'running' ? 'disconnected' : d.status, phase: '', blocks: [], tools: [], response: d.response, error: d.status === 'failed' ? 'Run failed (from stored state).' : undefined, diagnostic: d.diagnostic, branch: 'agent/' + s.id });
           else if (d.status !== 'running') { var last = s.turns[s.turns.length - 1]; if (last && (last.status === 'running' || last.status === 'disconnected') && !active[id + ':' + last.messageId]) { last.status = d.status; last.response = d.response; last.diagnostic = d.diagnostic; last.branch = 'agent/' + s.id; if (d.status === 'failed') last.error = 'Run failed (from stored state).'; } }
+          if (Array.isArray(d.messages)) d.messages.forEach(function (job) {
+            var turn = null; for (var i = 0; i < s.turns.length; i++) if (s.turns[i].messageId === job.messageId) turn = s.turns[i];
+            if (!turn) return;
+            if (job.state === 'queued') { turn.status = 'queued'; turn.mode = job.mode || turn.mode; }
+            else if (job.state === 'running' && !active[id + ':' + turn.messageId]) turn.status = 'disconnected';
+            else if (job.state === 'finished' && job.result) applyEvent(s, turn, job.result);
+          });
           save(); if (current === id) show(id); else renderSidebar();
         } else if (open) { /* nothing stored */ }
         return true;

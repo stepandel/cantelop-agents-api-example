@@ -4,6 +4,7 @@ import { test } from "node:test";
 import api from "../src/api.js";
 import type { CantelopApp } from "@cantelop/sdk/api";
 import type { Command } from "../src/contracts.js";
+import { ui } from "../src/ui.js";
 function harness() {
   const commands: Command[] = [];
   const opens: unknown[] = [];
@@ -137,8 +138,18 @@ test("serves the operator console without authentication and without embedding s
   assert.match(response.headers.get("content-security-policy") ?? "", /connect-src 'self'/);
   const html = await response.text();
   assert.match(html, /<title>Agent Console<\/title>/);
+  assert.match(html, /id="steer"[^>]*>Steer/);
+  assert.match(html, /id="send"[^>]*>Queue/);
+  assert.match(html, /case 'queued'/);
+  assert.match(html, /prompt: prompt, mode: mode/);
   for (const secret of ["api-secret", "webhook-secret"]) assert.equal(html.includes(secret), false);
   assert.equal(h.commands.length, 0);
+});
+
+test("operator console browser script is valid JavaScript", () => {
+  const script = ui.match(/<script>([\s\S]*)<\/script>/)?.[1];
+  assert.ok(script);
+  assert.doesNotThrow(() => new Function(script));
 });
 
 test("reindex requires authentication and dispatches to a dedicated workspace actor", async () => {
@@ -148,4 +159,15 @@ test("reindex requires authentication and dispatches to a dedicated workspace ac
   assert.equal(response.status, 202);
   assert.deepEqual(h.commands, [{ type: "reindex" }]);
   assert.match((await response.json() as { sessionId: string }).sessionId, /^reindex-/);
+});
+
+test("follow-up mode supports queue and steer and rejects invalid modes", async () => {
+  const h = harness();
+  for (const mode of ["queue", "steer"] as const) {
+    assert.equal((await h.request("/sessions/messages", { sessionId: "one", prompt: "Continue", mode })).status, 202);
+    assert.deepEqual(h.commands.at(-1), { type: "prompt", sessionId: "one", prompt: "Continue", mode });
+  }
+  for (const mode of ["interrupt", "", null, 1]) {
+    assert.equal((await h.request("/sessions/messages", { sessionId: "one", prompt: "Continue", mode })).status, 400);
+  }
 });

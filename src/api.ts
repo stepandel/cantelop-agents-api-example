@@ -17,6 +17,7 @@ function errorReason(error: unknown): string {
     "Invalid delivery ID": "invalid_delivery_id", "Invalid OpenRouter model ID": "invalid_model",
     "Invalid sessionId": "invalid_session_id", "Invalid messageId": "invalid_message_id",
     "Invalid title": "invalid_title", "Invalid body": "invalid_body", "Invalid prompt": "invalid_prompt",
+    "Invalid message mode": "invalid_message_mode",
     "Invalid author_association": "invalid_author_association", "Expected an object": "invalid_object",
     "Turn streams require SSE": "sse_required",
   };
@@ -125,7 +126,8 @@ export const createApi = (databaseFactory = sessionDatabase) => defineApi<Comman
   });
   route("POST", "/sessions/messages", true, async request => {
     const v = await body(request);
-    return dispatch({ type: "prompt", sessionId: sessionId(v.sessionId), prompt: text(v.prompt, "prompt") });
+    if (v.mode !== undefined && v.mode !== "queue" && v.mode !== "steer") throw new TypeError("Invalid message mode");
+    return dispatch({ type: "prompt", sessionId: sessionId(v.sessionId), prompt: text(v.prompt, "prompt"), mode: v.mode as "queue" | "steer" | undefined });
   });
   route("POST", "/sessions/inspect", true, async request => {
     const v = await body(request);

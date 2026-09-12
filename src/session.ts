@@ -1,37 +1,86 @@
 import { defineSessionBehaviour } from "@cantelop/sdk/session";
 import type { Command, Event } from "./contracts.js";
 import { handle } from "./worker.js";
+import { Inbox } from "./inbox.js";
 
-export function createBehaviour(run = handle, timeoutMs = 30 * 60 * 1000) {
-  return defineSessionBehaviour<Command, Event>(async ({ message, env, signal, output, activity }) => {
-    // Atomic session snapshots are safe to read while a turn holds the workspace lock.
+type SessionCommand = Command | { type: "drain" };
+export function createBehaviour(run = handle, timeoutMs = 30 * 60 * 1000, root = process.cwd()) {
+  let inbox: Inbox;
+  let current: { controller: AbortController; interruptible: boolean; steering: boolean } | undefined;
+  return defineSessionBehaviour<SessionCommand, Event>(async ({ message, session, env, signal, output, activity }) => {
+    inbox ??= new Inbox(root, session.id);
     if (message.payload.type === "inspect") {
-      await output.send(await run(process.cwd(), message.payload, message.id, env, signal));
+      const event = await run(root, message.payload, message.id, env, signal);
+      await output.send({ ...event, data: { ...(event.data as object ?? {}), messages: await inbox.snapshot() } });
       return;
     }
-    // Do not silently accept a follow-up into a volatile background queue.
-    if (activity.active) {
-      console.warn(JSON.stringify({ component: "agent-api", event: "session.rejected", messageId: message.id, reason: "session_busy" }));
-      await output.send({ type: "failed", messageId: message.id,
-        data: { code: "session_busy", error: "A turn is still active. Retry after it finishes." } });
-      throw new Error("Session is busy");
-    }
-    activity.start(async ({ signal: turnSignal, output: turnOutput }) => {
-      console.info(JSON.stringify({ component: "agent-api", event: "session.started", messageId: message.id, command: message.payload.type }));
-      let event: Event;
-      try {
-        await turnOutput.send({ type: "started", messageId: message.id, data: {} });
-        event = await run(process.cwd(), message.payload, message.id, env, turnSignal, undefined, event => turnOutput.send(event));
-      } catch {
-        event = { type: "failed", messageId: message.id,
-          data: { code: turnSignal.aborted ? "turn_cancelled" : "command_failed", error: "Command failed; inspect session state" } };
+    if (message.payload.type !== "drain") {
+      let admission;
+      try { admission = await inbox.admit(message.payload, message.id); }
+      catch (error) {
+        if (!(error instanceof Error) || error.message !== "queue_full") throw error;
+        await output.send({ type: "failed", messageId: message.id, data: { code: "queue_full", error: "Session queue has 100 pending messages." } });
+        return;
       }
-      // The worker persists outcomes before output. On cancellation the SDK closes
-      // output too; state remains inspectable even when delivery cannot succeed.
-      const log = JSON.stringify({ component: "agent-api", event: `session.${event.type}`, messageId: message.id, sessionId: event.sessionId, cancelled: turnSignal.aborted });
-      if (event.type === "failed") console.error(log); else console.info(log);
-      if (!turnSignal.aborted) await turnOutput.send(event);
-      if (event.type === "failed") throw new Error("Agent command failed");
+      if (admission.duplicate && admission.job.result) {
+        await output.send(admission.job.result);
+        return;
+      }
+      // Save before interrupting, so an accepted steering message cannot be lost.
+      if (!admission.duplicate && message.payload.type === "prompt" && message.payload.mode === "steer") {
+        if (current) {
+          current.steering = true;
+          if (current.interruptible) current.controller.abort({ code: "turn_steered" });
+        }
+      }
+      if (activity.active) {
+        await output.send({ type: "queued", messageId: message.id, sessionId: session.id,
+          data: { mode: message.payload.type === "prompt" ? message.payload.mode ?? "queue" : "queue" } });
+        return;
+      }
+    }
+    if (activity.active || !(await inbox.snapshot()).some(job => job.state === "queued")) return;
+    activity.start(async ({ signal: activitySignal, output: turnOutput, send }) => {
+      try {
+        while (!activitySignal.aborted) {
+          // Install the controller before admission can interleave with take().
+          current = { controller: new AbortController(), interruptible: false, steering: false };
+          const job = await inbox.take();
+          if (!job) break;
+          current.interruptible = job.command.type === "prompt";
+          if (current.steering && current.interruptible) current.controller.abort({ code: "turn_steered" });
+          activity.extend(timeoutMs);
+          const turnSignal = AbortSignal.any([activitySignal, current.controller.signal]);
+          console.info(JSON.stringify({ component: "agent-api", event: "session.started", messageId: job.messageId, sessionId: session.id, command: job.command.type }));
+          let event: Event;
+          try {
+            await turnOutput.send({ type: "started", messageId: job.messageId, sessionId: session.id, data: {} });
+            event = await run(root, job.command, job.messageId, env, turnSignal, undefined, async event => {
+              // Creation must save its session before a follow-up can interrupt it.
+              if (current && event.type === "status" && (event.data as { phase?: string })?.phase === "checkout") {
+                current.interruptible = true;
+                if (current.steering) current.controller.abort({ code: "turn_steered" });
+              }
+              await turnOutput.send(event);
+            });
+          } catch {
+            event = { type: "failed", messageId: job.messageId, sessionId: session.id,
+              data: { code: turnSignal.aborted ? "turn_cancelled" : "command_failed", error: "Command failed; inspect session state" } };
+          }
+          if (current.controller.signal.aborted) event = { type: "failed", messageId: job.messageId, sessionId: session.id,
+            data: { code: "turn_steered", error: "Interrupted by a steering message; the new instruction runs next." } };
+          current = undefined;
+          await inbox.finish(job.messageId, event);
+          console[event.type === "failed" ? "error" : "info"](JSON.stringify({ component: "agent-api", event: `session.${event.type}`, messageId: job.messageId, sessionId: session.id }));
+          if (!activitySignal.aborted) await turnOutput.send(event);
+        }
+      } finally {
+        current = undefined;
+        // Delivered by Cantelop only after this activity settles, closing the
+        // race where admission happens just as the drain finds an empty queue.
+        // On cancellation leave pending work saved for the next request.
+        if (!activitySignal.aborted) send({ type: "drain" });
+      }
     }, { timeoutMs });
   });
 }

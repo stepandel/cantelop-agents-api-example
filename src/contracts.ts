@@ -4,11 +4,11 @@ export interface Issue { number: number; title: string; body: string; repository
 export type Command =
   | { type: "reindex" }
   | { type: "create"; spec: SessionSpec }
-  | { type: "prompt"; sessionId: string; prompt: string }
+  | { type: "prompt"; sessionId: string; prompt: string; mode?: "queue" | "steer" }
   | { type: "inspect"; sessionId: string }
   | { type: "rule"; repository: string; model: Model }
   | { type: "issue"; deliveryId: string; issue: Issue };
-export type Progress = { type: "started" | "status" | "text.delta" | "text.replace" | "tool.status"; data: unknown };
+export type Progress = { type: "queued" | "started" | "status" | "text.delta" | "text.replace" | "tool.status"; data: unknown };
 export interface Event {
   type: "completed" | "failed" | "ignored" | "configured" | "session" | Progress["type"];
   messageId: string;

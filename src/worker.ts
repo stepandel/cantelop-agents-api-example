@@ -67,7 +67,10 @@ async function handleLocked(root: string, command: Exclude<Command, { type: "rei
   else {
     const stored = await readJSON<StoredSession>(sessionFile(command.sessionId));
     if (!stored) throw new Error("Session does not exist");
-    spec = { sessionId: stored.sessionId, repository: stored.repository, model: stored.model, prompt: command.prompt };
+    spec = { sessionId: stored.sessionId, repository: stored.repository, model: stored.model,
+      prompt: command.mode === "steer"
+        ? `Interrupted or superseded user request:\n${stored.requestPrompt ?? stored.prompt}\n\nNew steering instruction (takes precedence):\n${command.prompt}`
+        : command.prompt };
   }
   spec = { ...spec, model: model(spec.model) };
   repository(spec.repository, env.GITHUB_REPOSITORIES);
@@ -75,7 +78,8 @@ async function handleLocked(root: string, command: Exclude<Command, { type: "rei
   const file = sessionFile(spec.sessionId);
   const previous = await readJSON<StoredSession>(file);
   if (command.type === "create" && previous) throw new Error("Session already exists");
-  const stored: StoredSession = { ...spec, opencodeId: previous?.opencodeId, status: "running", createdAt: previous?.createdAt ?? new Date().toISOString(), updatedAt: previous?.updatedAt };
+  const requestPrompt = command.type === "prompt" ? command.prompt : spec.prompt;
+  const stored: StoredSession = { ...spec, requestPrompt, opencodeId: previous?.opencodeId, status: "running", createdAt: previous?.createdAt ?? new Date().toISOString(), updatedAt: previous?.updatedAt };
   const saveSession = async () => {
     const lastUpdate = stored.updatedAt ? Date.parse(stored.updatedAt) : 0;
     stored.updatedAt = new Date(Math.max(Date.now(), lastUpdate + 1)).toISOString();
@@ -94,6 +98,7 @@ async function handleLocked(root: string, command: Exclude<Command, { type: "rei
       onProgress: (progress: Progress) => emit(event(progress.type, progress.data, spec.sessionId)),
       onCreated: async id => { stored.opencodeId = id; await saveSession(); },
     });
+    signal.throwIfAborted();
     stored.status = "completed";
     await saveSession();
     if (command.type === "issue") await deps.comment(spec.repository, command.issue.number, `Cantelop session \`${spec.sessionId}\`\n\n${stored.response || "The agent completed without a summary; inspect the session."}`, env, signal);
@@ -102,7 +107,9 @@ async function handleLocked(root: string, command: Exclude<Command, { type: "rei
     return result;
   } catch (error) {
     stored.status = "failed";
-    stored.diagnostic = error instanceof AgentError ? error.diagnostic : { code: signal.aborted ? "turn_cancelled" : "command_failed" };
+    stored.diagnostic = signal.aborted && signal.reason?.code === "turn_steered"
+      ? { code: "turn_steered" }
+      : error instanceof AgentError ? error.diagnostic : { code: signal.aborted ? "turn_cancelled" : "command_failed" };
     console.error("Agent turn failed", JSON.stringify(stored.diagnostic));
     await saveSession();
     const result = event("failed", { diagnostic: stored.diagnostic, error: error instanceof AgentError ? agentFailureMessage(error.diagnostic) : "Run failed. Inspect the shared checkout, provider configuration and session state before retrying. External side effects may have occurred." }, spec.sessionId);

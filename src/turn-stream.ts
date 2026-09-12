@@ -1,6 +1,6 @@
 import { readSSE } from "./sse.js";
 const terminal = new Set(["completed", "failed", "ignored", "configured", "session"]);
-const allowed = new Set([...terminal, "started", "status", "text.delta", "text.replace", "tool.status"]);
+const allowed = new Set([...terminal, "queued", "started", "status", "text.delta", "text.replace", "tool.status"]);
 
 /** Keep the platform replay cursor, expose only app data, and close this turn. */
 export function turnStream(upstream: Response, messageId: string): Response {
@@ -19,7 +19,8 @@ export function turnStream(upstream: Response, messageId: string): Response {
           if (!frame.data) { controller.enqueue(encoder.encode(": keep-alive\n\n")); return; }
           const envelope = JSON.parse(frame.data);
           const payload = envelope.data;
-          if (envelope.message_id !== messageId || payload?.messageId !== messageId || !allowed.has(payload.type)) continue;
+          // A draining activity uses its initiating transport ID for every queued turn.
+          if (payload?.messageId !== messageId || !allowed.has(payload.type)) continue;
           controller.enqueue(encoder.encode(`${frame.id ? `id: ${frame.id}\n` : ""}event: ${payload.type}\ndata: ${JSON.stringify(payload)}\n\n`));
           if (terminal.has(payload.type)) { controller.close(); await iterator.return(); }
           return;

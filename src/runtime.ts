@@ -116,6 +116,7 @@ export async function runAgent(options: {
   const hints = new Set<string>();
   let exitCode: number | null | undefined;
   let exitSignal: NodeJS.Signals | null | undefined;
+  options.signal.throwIfAborted();
   const child = spawn("opencode", ["serve", "--hostname=127.0.0.1", "--port=0"], {
     cwd: options.root, env: options.env, stdio: ["ignore", "pipe", "pipe"], signal: options.signal,
   });

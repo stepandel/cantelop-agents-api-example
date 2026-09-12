@@ -20,10 +20,11 @@ test("SSE decoding handles split UTF-8, CRLF and multiline data", async () => {
 
 test("turn stream filters other requests, strips transport metadata and closes upstream on terminal", async () => {
   let cancelled = false;
-  const frame = (messageId: string, type: string, n: number) => encode.encode(`id: cursor:${n}\ndata: ${JSON.stringify({ message_id: messageId, source_sandbox_id: "private-sandbox", data: { type, messageId, data: { text: "hello" } } })}\n\n`);
-  const source = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(frame("other", "completed", 1)); c.enqueue(frame("wanted", "text.delta", 2)); c.enqueue(frame("wanted", "completed", 3)); }, cancel() { cancelled = true; } });
+  const frame = (messageId: string, type: string, n: number) => encode.encode(`id: cursor:${n}\ndata: ${JSON.stringify({ message_id: "activity-owner", source_sandbox_id: "private-sandbox", data: { type, messageId, data: { text: "hello" } } })}\n\n`);
+  const source = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(frame("other", "completed", 1)); c.enqueue(frame("wanted", "queued", 2)); c.enqueue(frame("wanted", "text.delta", 2)); c.enqueue(frame("wanted", "completed", 3)); }, cancel() { cancelled = true; } });
   const response = turnStream(new Response(source), "wanted");
   const output = await response.text();
+  assert.match(output, /event: queued/);
   assert.match(output, /event: text.delta/);
   assert.match(output, /id: cursor:3\nevent: completed/);
   assert.doesNotMatch(output, /private-sandbox|other|source_sandbox_id/);

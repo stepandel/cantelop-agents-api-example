@@ -21,7 +21,8 @@ updates use temporary actors and take the same workspace lock.
 
 - `src/api.ts`: authentication, input validation, webhook verification, dispatch, SSE.
 - `src/ui.ts`: the single-page operator console served at `GET /`.
-- `src/session.ts`: per-session Cantelop worker entry point.
+- `src/session.ts`: per-session Cantelop worker entry point and turn scheduling.
+- `src/inbox.ts`: atomic durable message queue and turn outcomes.
 - `src/lock.ts`: cross-process workspace lock with cancellable waiting.
 - `src/worker.ts`: durable session models, issue rules, receipts and outcomes.
 - `src/runtime.ts`: authenticated Git, shared checkouts, OpenCode lifecycle.
@@ -80,7 +81,8 @@ browser. Open `http://localhost:8787/` during `cantelop dev` or your deployed
 app URL, paste the `API_TOKEN` in **Settings**, then start a session with a
 repository, an OpenRouter model ID and a prompt. The console streams the turn
 (`status`, `text.delta`, `tool.status`, `completed` / `failed`), supports
-follow-up prompts, **Inspect** for the stored session snapshot, opening an
+follow-up prompts with separate **Queue** and **Steer** actions, **Inspect** for
+the stored session and queue snapshot, opening an
 existing session by ID (for example an `issue-…` session), and setting a
 per-repository GitHub issue model rule.
 
@@ -93,7 +95,7 @@ never cancels the agent.
 
 ## API
 
-All routes except `/health` and `/webhooks/github` require
+All routes except `/`, `/health` and `/webhooks/github` require
 `Authorization: Bearer YOUR_API_TOKEN`. Commands return `202` after Cantelop
 accepts them, **not after the agent completes**. Connect to the session-specific
 `events` URL returned by dispatch and correlate output by `messageId`:
@@ -122,6 +124,27 @@ curl http://localhost:8787/sessions/messages \
   -d '{"sessionId":"SESSION_ID","prompt":"Add a regression test and push the update."}'
 ```
 
+Follow-ups accept `"mode": "queue"` (the default) or `"mode": "steer"`:
+
+```sh
+curl http://localhost:8787/sessions/messages \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"sessionId":"SESSION_ID","mode":"steer","prompt":"Focus on the API tests first."}'
+```
+
+Queue mode runs messages in arrival order after the active turn. Steering saves
+the new message, interrupts the active turn, waits for runtime cleanup, then runs
+it ahead of ordinary queued messages using the same persisted OpenCode conversation
+and model. Steering messages retain arrival order among themselves. If idle, either
+mode starts immediately. Initial session creation is allowed to save its session
+before interruption. Steering is interrupt-and-continue; it does not inject text
+into a model response already being generated. The interrupted request terminates
+with `failed` and `data.code: "turn_steered"`; edits and external side effects already
+performed remain. Each queued/steering request has its own `messageId` and stream.
+A failed turn does not discard the remaining queue. An interrupted issue run does
+not post its completion comment.
+
 To retrieve durable state after reconnecting, dispatch an inspection request:
 
 ```sh
@@ -132,7 +155,9 @@ curl http://localhost:8787/sessions/inspect \
 ```
 
 It returns `202`; the correlated `session` event contains the stored model,
-OpenCode ID, prompt, status and latest response (or `null` for an unknown session).
+OpenCode ID, prompt, status and latest response. Its `messages` array includes
+queued/running/finished message IDs, modes and terminal results; unknown sessions
+return only that array.
 Inspection reads an atomic saved snapshot without waiting for active work. Completion events
 contain the response and branch name; they do not imply a push succeeded unless
 the agent actually reports a verified push. There is no automatic merge.
@@ -207,10 +232,15 @@ messages. Live text and tool progress remain in session events rather than logs.
   waiting for the shared workspace lock). Message admission returns promptly;
   a successful platform message receipt does not mean the coding turn completed.
   Read the application's `completed` / `failed` events or inspect saved state.
-- Follow-ups during an active turn produce a `failed` event with
-  `data.code: "session_busy"`; they are not queued. Retry after the turn ends.
-  HTTP 202 still means the command was dispatched, not that a new turn started.
+- Follow-ups queue by default, with up to 100 pending messages per session.
+  A full queue emits `failed` with `data.code: "queue_full"`. HTTP 202 means
+  dispatch succeeded; a `queued` event confirms durable queue admission.
   Inspection remains available while the workspace is locked.
+- Pending messages survive restarts. The next work request resumes draining them.
+  A previously running message is marked `turn_interrupted` in inspection and
+  is never automatically replayed. Crash recovery does not remove stale workspace
+  locks. Activity cancellation leaves pending messages saved for the next work request.
+  Inbox history has no automatic retention cleanup.
 - Failed turns persist safe diagnostics: phase, process exit code/signal and
   recognized stderr categories, plus recognized provider error categories and HTTP
   status codes. Model, authentication, credit and rate-limit failures include
@@ -303,6 +333,7 @@ Platform sandbox IDs and transport envelopes are omitted on the turn endpoint.
 
 | Event | Client behavior |
 | --- | --- |
+| `queued` | Keep waiting; the message is durably queued (`data.mode`). |
 | `started` | Mark the turn active. |
 | `status` | Show `data.phase`: waiting for workspace, checkout, or agent startup. |
 | `text.delta` | Append `data.text` to the text block identified by `data.partId`. |

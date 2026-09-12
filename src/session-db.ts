@@ -2,6 +2,8 @@ import { createClient, type Client, type InValue } from "@libsql/client/web";
 import { sessionId, type SessionSpec } from "./contracts.js";
 
 export interface StoredSession extends SessionSpec {
+  /** The exact user input, before steering context is added to the agent prompt. */
+  requestPrompt?: string;
   opencodeId?: string;
   status: "running" | "completed" | "failed";
   response?: string;
@@ -59,7 +61,7 @@ export class SessionDatabase {
           snapshot=excluded.snapshot
         WHERE excluded.updated_at >= agent_sessions.updated_at`,
       args: [this.workspace, session.sessionId, session.repository, session.model, session.status,
-        session.prompt.slice(0, 200), session.createdAt, session.updatedAt, JSON.stringify(session)],
+        (session.requestPrompt ?? session.prompt).slice(0, 200), session.createdAt, session.updatedAt, JSON.stringify(session)],
     });
   }
   async get(id: string): Promise<StoredSession | null> {

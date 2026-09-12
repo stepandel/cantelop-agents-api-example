@@ -129,3 +129,15 @@ test("model failure gives actionable UI feedback and persists safe diagnostics",
   const stored = await h.run({ type: "inspect", sessionId: "bad-model" }, "inspect-1");
   assert.equal((stored.data as { diagnostic: { reason: string } }).diagnostic.reason, "model_not_found");
 });
+
+test("steering preserves the previous task, model and conversation", async t => {
+  const h = await harness(t);
+  await h.run({ type: "create", spec: { sessionId: "one", model, repository: "owner/repo", prompt: "Fix the API" } }, "m1");
+  await h.run({ type: "prompt", sessionId: "one", prompt: "Start with tests", mode: "steer" }, "m2");
+  assert.equal(h.runs[1]?.id, "opencode-1");
+  assert.equal(h.runs[1]?.model, model);
+  assert.match(h.runs[1]!.prompt, /Fix the API/);
+  assert.match(h.runs[1]!.prompt, /takes precedence\):\nStart with tests/);
+  const stored = await h.run({ type: "inspect", sessionId: "one" }, "m3");
+  assert.equal((stored.data as { requestPrompt: string }).requestPrompt, "Start with tests");
+});
