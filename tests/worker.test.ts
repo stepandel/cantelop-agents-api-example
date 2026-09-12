@@ -102,3 +102,17 @@ test("inspection remains available during work; cancellation persists failure an
   const recovered = await h.run({ type: "inspect", sessionId: "cancel" }, "inspect-recovered");
   assert.equal((recovered.data as { diagnostic?: unknown }).diagnostic, undefined);
 });
+
+for (const override of [false, true]) {
+  test(`issue uses ${override ? "repository override" : "default model"} and preserves it for follow-ups`, async t => {
+    const h = await harness(t);
+    const fallback = "openai/gpt-4.1";
+    if (override) await h.run({ type: "rule", repository: "owner/repo", model }, "rule");
+    const issue: Command = { type: "issue", deliveryId: "default-delivery", issue: { repository: "owner/repo", number: 8, title: "Bug", body: "Fix", association: "OWNER" } };
+    const result = await handle(h.root, issue, "issue", { ...env, GITHUB_ISSUE_MODEL: fallback }, new AbortController().signal, h.deps);
+    assert.equal(result.type, "completed");
+    assert.equal(h.runs[0]?.model, override ? model : fallback);
+    await h.run({ type: "prompt", sessionId: result.sessionId!, prompt: "Continue" }, "follow-up");
+    assert.equal(h.runs[1]?.model, override ? model : fallback);
+  });
+}

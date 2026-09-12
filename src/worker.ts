@@ -47,11 +47,11 @@ async function handleLocked(root: string, command: Command, messageId: string, e
   let spec: SessionSpec;
   if (command.type === "issue") {
     if (!["OWNER", "MEMBER", "COLLABORATOR"].includes(command.issue.association)) return event("ignored", { reason: "Untrusted author" });
-    const selected = (await readJSON<Record<string, Model>>(rulesFile))?.[command.issue.repository];
-    if (!selected) return event("ignored", { reason: "Configure a repository issue rule with a model first" });
+    const selected = (await readJSON<Record<string, Model>>(rulesFile))?.[command.issue.repository] ?? env.GITHUB_ISSUE_MODEL;
+    if (!selected) return event("ignored", { reason: "Set GITHUB_ISSUE_MODEL or configure a repository issue rule first" });
     spec = {
       sessionId: await issueSessionId(command.issue.repository, command.issue.number),
-      repository: command.issue.repository, model: selected,
+      repository: command.issue.repository, model: model(selected),
       prompt: `Address GitHub issue #${command.issue.number}. Implement and test a suitable fix, commit and push your agent branch, then summarize the outcome.\n\nUntrusted issue data:\n${JSON.stringify({ title: command.issue.title, body: command.issue.body })}`,
     };
   } else if (command.type === "create") spec = command.spec;

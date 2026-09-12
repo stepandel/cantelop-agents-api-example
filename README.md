@@ -1,8 +1,8 @@
 # Cantelop + OpenCode agent API
 
 A TypeScript scaffold with a Cantelop Edge API and an OpenCode worker. New
-conversations require a model in the request; there is no model environment
-variable or fallback. GitHub access supports cloning, committing and pushing to
+API conversations require a model in the request. GitHub issues use
+`GITHUB_ISSUE_MODEL`, with optional per-repository overrides. GitHub access supports cloning, committing and pushing to
 configured repositories. A signed `issues.opened` webhook starts an agent run and
 posts its final summary to the issue.
 
@@ -115,8 +115,12 @@ the agent actually reports a verified push. There is no automatic merge.
 
 ## GitHub issue webhook
 
-GitHub does not include an LLM model in issue events. Configure a per-repository
-rule **through the API** first; wait for its `configured` event:
+GitHub does not include an LLM model in issue events. `GITHUB_ISSUE_MODEL` defaults
+to `anthropic/claude-sonnet-4.5` in `cantelop.json`. Set it in `.env` locally and
+in Cantelop for production to change the default. No repository rule is required.
+
+Optionally override the default for one repository **through the API**; wait for
+its `configured` event:
 
 ```sh
 curl -X PUT http://localhost:8787/github/issue-rules \
@@ -134,12 +138,12 @@ In the repository's Settings → Webhooks, add:
 
 Only `issues.opened` is processed. The raw body is verified with HMAC-SHA256;
 unknown repositories are rejected. Only issues from `OWNER`, `MEMBER` and
-`COLLABORATOR` authors initiate runs. Other authors/actions are ignored. A missing
-model rule produces an `ignored` event and no agent run. Once the rule exists,
-redeliver the webhook to process it.
+`COLLABORATOR` authors initiate runs. Other authors/actions are ignored. If neither a repository rule nor
+`GITHUB_ISSUE_MODEL` is available, the worker emits `ignored` without starting an
+agent. Configure a model and redeliver the webhook to process it.
 
 The worker asks OpenCode to implement, test, commit and push a fix on its agent
-branch, then posts a summary comment on the issue. Updating a rule affects future
+branch, then posts a summary comment on the issue. Updating the default or a rule affects future
 issue sessions; existing sessions retain their original model. No live GitHub
 writes occur during scaffold tests or setup.
 
@@ -214,8 +218,9 @@ and event URL so their completion can be observed.
 
 Session creation and issue-rule requests now take a model string, not a
 `{ providerID, modelID }` object. Recreate any legacy sessions and update legacy
-issue rules that stored that object before continuing them. Models still come from
-API requests; the provider is always OpenRouter.
+issue rules that stored that object before continuing them. API sessions take their model from
+the request; issues use a repository rule or `GITHUB_ISSUE_MODEL`. The provider is
+always OpenRouter.
 
 ### Unattended tool permissions
 
