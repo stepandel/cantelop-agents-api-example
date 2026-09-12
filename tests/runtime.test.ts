@@ -3,7 +3,35 @@ import { test } from "node:test";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { runAgent, AgentError, stderrHints } from "../src/runtime.js";
+import { runAgent, AgentError, stderrHints, git, CommandError, gitFailureReason } from "../src/runtime.js";
+
+test("Git failures report operation, exit status and category without arguments or stderr", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "git-diagnostic-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await writeFile(path.join(root, "git"), '#!/bin/sh\necho "fatal: secret-token already checked out at private-path" >&2\nexit 128\n', { mode: 0o700 });
+  await assert.rejects(git(root, ["worktree", "add", "private-path", "private-branch"], { PATH: root }, AbortSignal.timeout(5000)), error => {
+    assert.ok(error instanceof CommandError);
+    assert.deepEqual(error.diagnostic, { code: "command_failed", phase: "checkout", operation: "git_worktree", exitCode: 128, signal: null, reason: "branch_in_use" });
+    assert.doesNotMatch(JSON.stringify(error), /secret-token|private-path|private-branch/);
+    return true;
+  });
+  await assert.rejects(git(root, ["status"], { PATH: path.join(root, "missing") }, AbortSignal.timeout(5000)), error => {
+    assert.ok(error instanceof CommandError);
+    assert.equal(error.diagnostic.reason, "spawn_failed");
+    return true;
+  });
+});
+
+test("Git stderr classifications cover actionable checkout failures", () => {
+  for (const [message, reason] of [
+    ["Your local changes would be overwritten", "uncommitted_changes"],
+    ["Unable to create '/private/index.lock': File exists", "git_locked"],
+    ["Authentication failed for https://secret@github.com/private", "git_auth"],
+    ["Could not resolve host: github.com", "git_network"],
+    ["invalid reference: origin/HEAD", "invalid_git_state"],
+    ["unknown private error", "git_failed"],
+  ]) assert.equal(gitFailureReason(message!), reason);
+});
 
 test("OpenCode startup exit preserves safe diagnostics without stderr secrets", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "opencode-exit-"));

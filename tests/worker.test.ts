@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { handle, type Dependencies } from "../src/worker.js";
-import { agentEnvironment, checkout, git } from "../src/runtime.js";
+import { agentEnvironment, checkout, git, CommandError } from "../src/runtime.js";
 import type { Command } from "../src/contracts.js";
 const env = { GITHUB_TOKEN: "test-only", OPENROUTER_API_KEY: "test-openrouter", GITHUB_REPOSITORIES: "owner/repo" };
 const model = "anthropic/claude-sonnet-4.5";
@@ -50,6 +50,26 @@ test("failed side effects are not automatically replayed", async t => {
   assert.equal(JSON.stringify(failed).includes("secret provider error"), false);
   h.deps.runAgent = async () => { assert.fail("must not rerun"); };
   assert.equal((await h.run(command, "m1")).type, "failed");
+});
+test("checkout diagnostics survive persistence and follow-up failure events", async t => {
+  const h = await harness(t);
+  await h.run({ type: "create", spec: { sessionId: "diagnostic", repository: "owner/repo", model, prompt: "Start" } }, "m1");
+  const diagnostic = { code: "command_failed", phase: "checkout", operation: "git_worktree", exitCode: 128, reason: "branch_in_use" } as const;
+  h.deps.checkout = async () => { throw new CommandError(diagnostic); };
+  const result = await h.run({ type: "prompt", sessionId: "diagnostic", prompt: "Retry" }, "m2");
+  assert.equal(result.type, "failed");
+  assert.deepEqual((result.data as { diagnostic: unknown }).diagnostic, diagnostic);
+  assert.match((result.data as { error: string }).error, /already checked out/);
+  const saved = await h.run({ type: "inspect", sessionId: "diagnostic" }, "m3");
+  assert.deepEqual((saved.data as { diagnostic: unknown }).diagnostic, diagnostic);
+  assert.equal(h.runs.length, 1);
+});
+test("unclassified failures identify the worker phase without exposing exception text", async t => {
+  const h = await harness(t);
+  h.deps.checkout = async () => { throw new Error("private filesystem error"); };
+  const result = await h.run({ type: "create", spec: { sessionId: "phase", repository: "owner/repo", model, prompt: "Start" } }, "m1");
+  assert.deepEqual((result.data as { diagnostic: unknown }).diagnostic, { code: "command_failed", phase: "checkout" });
+  assert.doesNotMatch(JSON.stringify(result), /private filesystem/);
 });
 test("API and webhook secrets are absent from agent subprocess environment", () => {
   const actual = agentEnvironment("/workspace", { ...env, SESSION_DATABASE_AUTH_TOKEN: "private-db", SESSION_DATABASE_URL: "https://private-db.example", API_TOKEN: "private-api", GITHUB_WEBHOOK_SECRET: "private-webhook", ANTHROPIC_API_KEY: "unused", OPENAI_API_KEY: "unused" });

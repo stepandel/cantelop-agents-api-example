@@ -46,6 +46,10 @@ test("verifies raw webhook signatures, ignores other actions and untrusted autho
   assert.equal((await h.request("/webhooks/github", { ...payload, action: "edited" }, headers(payload))).status, 401);
   const edited = { ...payload, action: "edited" };
   assert.equal((await h.request("/webhooks/github", edited, headers(edited))).status, 200);
+  const comment = { ...payload, action: "created", comment: { body: "proceed", author_association: "OWNER" } };
+  const commentResponse = await h.request("/webhooks/github", comment, { ...headers(comment), "x-github-event": "issue_comment" });
+  assert.deepEqual(await commentResponse.json(), { ignored: true });
+  assert.equal(h.commands.length, 0);
   const untrusted = { ...payload, issue: { ...payload.issue, author_association: "NONE" } };
   assert.equal((await h.request("/webhooks/github", untrusted, headers(untrusted))).status, 200);
   assert.equal((await h.request("/webhooks/github", payload, headers(payload))).status, 202);

@@ -2,7 +2,7 @@ import { backfillSessions } from "./session-db-migration.js";
 import path from "node:path";
 import { withWorkspaceLock } from "./lock.js";
 import { createHash } from "node:crypto";
-import { agentEnvironment, agentFailureMessage, checkout, readJSON, runAgent, saveJSON, type Env, AgentError } from "./runtime.js";
+import { agentEnvironment, agentFailureMessage, checkout, commandFailureMessage, CommandError, readJSON, runAgent, saveJSON, type Env, AgentError } from "./runtime.js";
 import { issueSessionId, model, repository, sessionId, type Command, type Event, type Model, type SessionSpec, type Progress } from "./contracts.js";
 import { sessionDatabase, type SessionDatabase, type StoredSession } from "./session-db.js";
 export type { StoredSession } from "./session-db.js";
@@ -20,7 +20,7 @@ export const dependencies: Dependencies = {
       headers: { authorization: `Bearer ${env.GITHUB_TOKEN}`, accept: "application/vnd.github+json", "content-type": "application/json", "user-agent": "cantelop-agents-api" },
       body: JSON.stringify({ body: body.slice(0, 60000) }),
     });
-    if (!response.ok) throw new Error("GitHub comment failed");
+    if (!response.ok) throw new CommandError({ code: "command_failed", phase: "github_comment", operation: "post_comment", statusCode: response.status });
   },
 };
 export async function handle(root: string, command: Command, messageId: string, env: Env, signal: AbortSignal, deps = dependencies, emit: (event: Event) => Promise<void> = async () => {}): Promise<Event> {
@@ -81,22 +81,29 @@ async function handleLocked(root: string, command: Exclude<Command, { type: "rei
   if (command.type === "create" && previous) throw new Error("Session already exists");
   const requestPrompt = command.type === "prompt" ? command.prompt : spec.prompt;
   const stored: StoredSession = { ...spec, messageId, tools: [], requestPrompt, opencodeId: previous?.opencodeId, status: "running", createdAt: previous?.createdAt ?? new Date().toISOString(), updatedAt: previous?.updatedAt };
+  let phase = "save_session";
   const saveSession = async () => {
+    const previousPhase = phase;
+    phase = "save_session";
     const lastUpdate = stored.updatedAt ? Date.parse(stored.updatedAt) : 0;
     stored.updatedAt = new Date(Math.max(Date.now(), lastUpdate + 1)).toISOString();
     // Keep the durable workspace snapshot for inspection and database repair.
     await saveJSON(file, stored);
     await database?.save(stored);
+    phase = previousPhase;
   };
   await saveJSON(receiptFile, { status: "started", sessionId: spec.sessionId });
   try {
     await saveSession();
+    phase = "checkout";
     await emit(event("status", { phase: "checkout" }, spec.sessionId));
     const agentEnv = agentEnvironment(root, env);
     const directory = await deps.checkout(root, spec.repository, spec.sessionId, agentEnv, signal);
+    phase = "agent_starting";
     await emit(event("status", { phase: "agent_starting" }, spec.sessionId));
     stored.response = await deps.runAgent({ root, directory, env: agentEnv, model: stored.model, prompt: spec.prompt, id: stored.opencodeId, signal,
       onProgress: async (progress: Progress) => {
+        phase = "agent_progress";
         if (progress.type === "tool.status") {
           const tool = progress.data as { partId: string; tool: string; status: string };
           const previous = stored.tools!.find(item => item.partId === tool.partId);
@@ -118,18 +125,21 @@ async function handleLocked(root: string, command: Exclude<Command, { type: "rei
     signal.throwIfAborted();
     stored.status = "completed";
     await saveSession();
+    phase = "github_comment";
     if (command.type === "issue") await deps.comment(spec.repository, command.issue.number, `Cantelop session \`${spec.sessionId}\`\n\n${stored.response || "The agent completed without a summary; inspect the session."}`, env, signal);
     const result = event("completed", { response: stored.response, branch: `agent/${spec.sessionId}` }, spec.sessionId);
+    phase = "save_receipt";
     await saveJSON(receiptFile, { status: "completed", result });
     return result;
   } catch (error) {
     stored.status = "failed";
     stored.diagnostic = signal.aborted && signal.reason?.code === "turn_steered"
       ? { code: "turn_steered" }
-      : error instanceof AgentError ? error.diagnostic : { code: signal.aborted ? "turn_cancelled" : "command_failed" };
+      : signal.aborted ? { code: "turn_cancelled", phase }
+      : error instanceof AgentError || error instanceof CommandError ? error.diagnostic : { code: "command_failed", phase };
     console.error("Agent turn failed", JSON.stringify(stored.diagnostic));
     await saveSession();
-    const result = event("failed", { diagnostic: stored.diagnostic, error: error instanceof AgentError ? agentFailureMessage(error.diagnostic) : "Run failed. Inspect the shared checkout, provider configuration and session state before retrying. External side effects may have occurred." }, spec.sessionId);
+    const result = event("failed", { diagnostic: stored.diagnostic, error: error instanceof AgentError ? agentFailureMessage(error.diagnostic) : commandFailureMessage(error instanceof CommandError ? error.diagnostic : { code: "command_failed", phase }) }, spec.sessionId);
     await saveJSON(receiptFile, { status: "failed", result });
     return result;
   }

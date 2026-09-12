@@ -316,6 +316,11 @@ unknown repositories are rejected. Only issues from `OWNER`, `MEMBER` and
 `GITHUB_ISSUE_MODEL` is available, the worker emits `ignored` without starting an
 agent. Configure a model and redeliver the webhook to process it.
 
+Issue comments (`issue_comment`), including comments by the issue owner, do not
+continue the session. Send follow-ups through the web console or
+`POST /sessions/messages` using the issue's existing session ID. Subscribing the
+webhook to comment events alone does not enable comment follow-ups.
+
 The worker asks OpenCode to implement, test, commit and push a fix on its agent
 branch, then posts a summary comment on the issue. Updating the default or a rule affects future
 issue sessions; existing sessions retain their original model. Creating a qualifying issue after enabling this webhook can trigger commits, pushes,
@@ -489,6 +494,11 @@ messages. Live text and tool progress remain in session events rather than logs.
   `SIGKILL` alone does not prove OOM. Activity cancellation persists failure when
   cleanup runs, but may prevent delivery of a final event; inspect the session.
   Abrupt VM/process termination still cannot guarantee cleanup or a final write.
+- Git checkout failures include the operation, exit code/signal, and a safe
+  category such as `branch_in_use`, `uncommitted_changes`, `git_locked`, or
+  `git_auth`. Other command failures include the worker phase; GitHub comment
+  rejections also include the HTTP status. Raw command arguments and stderr are
+  not returned. These diagnostics describe new failures after deploying the update.
 - This version has no automatic PR creation or state retention cleanup. The web
   console only reads and dispatches through the API.
 - All sessions can see the shared filesystem. Agent instructions are guidance,
