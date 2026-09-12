@@ -142,3 +142,12 @@ test("an unavailable database prevents agent side effects and preserves inspecta
   await assert.rejects(handle(h.root, { type: "create", spec: snapshot("one") }, "m1", env, new AbortController().signal, deps));
   assert.equal((await readJSON<StoredSession>(path.join(h.root, ".agent-api", "sessions", "one.json")))?.status, "failed");
 });
+
+test("reindex command imports the live workspace without agent work", async t => {
+  const h = await harness(t);
+  await saveJSON(path.join(h.root, ".agent-api", "sessions", "old.json"), snapshot("old"));
+  const deps: Dependencies = { sessionDatabase: () => h.db, async checkout() { assert.fail("must not checkout"); }, async runAgent() { assert.fail("must not run"); }, async comment() { assert.fail("must not comment"); } };
+  const result = await handle(h.root, { type: "reindex" }, "m1", env, new AbortController().signal, deps);
+  assert.deepEqual(result, { type: "configured", messageId: "m1", data: { indexedSessions: 1 } });
+  assert.ok(await h.db.get("old"));
+});

@@ -140,3 +140,12 @@ test("serves the operator console without authentication and without embedding s
   for (const secret of ["api-secret", "webhook-secret"]) assert.equal(html.includes(secret), false);
   assert.equal(h.commands.length, 0);
 });
+
+test("reindex requires authentication and dispatches to a dedicated workspace actor", async () => {
+  const h = harness();
+  assert.equal((await h.request("/sessions/reindex", {}, {})).status, 401);
+  const response = await h.request("/sessions/reindex", {});
+  assert.equal(response.status, 202);
+  assert.deepEqual(h.commands, [{ type: "reindex" }]);
+  assert.match((await response.json() as { sessionId: string }).sessionId, /^reindex-/);
+});

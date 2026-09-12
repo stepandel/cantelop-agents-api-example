@@ -416,3 +416,15 @@ The database may continue to show the last successfully indexed status until
 backfill repairs it. Restore database connectivity and inspect the workspace
 before retrying agent work. Abrupt process termination can still leave a session
 marked `running`, as in the original receipt model.
+
+For a deployed workspace, you can run the same backfill remotely:
+
+```sh
+curl -X POST https://YOUR_APP.cantelop.dev/sessions/reindex \
+  -H "Authorization: Bearer $API_TOKEN"
+```
+
+Subscribe to the returned `stream` URL. A `configured` terminal event reports
+`data.indexedSessions`; `failed` indicates the index could not be repaired.
+This operation takes the workspace lock and only imports snapshots; it never
+calls the agent or GitHub. Initialize the database schema before dispatching it.

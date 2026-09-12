@@ -52,7 +52,7 @@ export const createApi = (databaseFactory = sessionDatabase) => defineApi<Comman
   async function dispatch(command: Command) {
     const id = command.type === "create" ? command.spec.sessionId
       : command.type === "issue" ? await issueSessionId(command.issue.repository, command.issue.number)
-      : command.type === "rule" ? `rule-${crypto.randomUUID()}` : command.sessionId;
+      : command.type === "rule" || command.type === "reindex" ? `${command.type}-${crypto.randomUUID()}` : command.sessionId;
     const message = await worker(id).dispatch(command);
     console.info(JSON.stringify({ component: "agent-api", event: "session.dispatched", command: command.type, sessionId: id, messageId: message.id }));
     return Response.json({ messageId: message.id, state: "accepted", sessionId: id, events: `/events?sessionId=${encodeURIComponent(id)}`, stream: `/turns/events?sessionId=${encodeURIComponent(id)}&messageId=${encodeURIComponent(message.id)}` }, { status: 202 });
@@ -118,6 +118,7 @@ export const createApi = (databaseFactory = sessionDatabase) => defineApi<Comman
     const session = await readDatabase(db => db.get(id));
     return session ? queryResponse({ session }) : queryResponse({ error: "Session not found" }, 404);
   });
+  route("POST", "/sessions/reindex", true, async () => dispatch({ type: "reindex" }));
   route("POST", "/sessions", true, async request => {
     const v = await body(request);
     return dispatch({ type: "create", spec: { sessionId: crypto.randomUUID(), repository: repository(v.repository, env.GITHUB_REPOSITORIES), model: model(v.model), prompt: text(v.prompt, "prompt") } });
