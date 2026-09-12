@@ -103,6 +103,14 @@ async function handleLocked(root: string, command: Exclude<Command, { type: "rei
           if (previous) previous.status = tool.status;
           else stored.tools!.push({ partId: tool.partId, tool: tool.tool, status: tool.status });
         }
+        if (progress.type === "status") {
+          stored.runtimeStatus = progress.data as StoredSession["runtimeStatus"];
+          console.info(JSON.stringify({ component: "agent-api", event: "session.runtime_status", sessionId: spec.sessionId, messageId, ...stored.runtimeStatus }));
+        }
+        if (progress.type === "status" || progress.type === "tool.status") {
+          stored.lastProgressAt = new Date().toISOString();
+          await saveSession();
+        }
         await emit(event(progress.type, progress.data, spec.sessionId));
       },
       onCreated: async id => { stored.opencodeId = id; await saveSession(); },

@@ -258,7 +258,7 @@ Platform sandbox IDs and transport envelopes are omitted on the turn endpoint.
 | --- | --- |
 | `queued` | Keep waiting; the message is durably queued (`data.mode`). |
 | `started` | Mark the turn active. |
-| `status` | Show `data.phase`: waiting for workspace, checkout, or agent startup. |
+| `status` | Show `data.phase`: workspace/checkout/startup, model validation, waiting for the model, or OpenCode busy/reasoning/retry/idle/error status. Retry events include a safe attempt count and next retry timestamp; errors include an allowlisted class and optional HTTP status. |
 | `text.delta` | Append `data.text` to the text block identified by `data.partId`. |
 | `text.replace` | Replace that block with `data.text` if OpenCode revises a snapshot. |
 | `tool.status` | Show the tool name and pending/running/completed/error state. |
@@ -268,7 +268,13 @@ Platform sandbox IDs and transport envelopes are omitted on the turn endpoint.
 
 `ignored`, `configured`, and inspection `session` events also terminate their
 request streams. Tool arguments/output, raw tool errors, and reasoning are not
-forwarded. Assistant text can include intermediate explanations across multiple
+forwarded. Reasoning is shown only as a “Model is reasoning” status, without its
+contents. Runtime statuses and tool transitions are saved for inspection; runtime
+statuses also appear in structured logs. `runtimeStatus` and `lastProgressAt` in
+session snapshots survive event replay expiry. Idle/error status events are not
+terminal; wait for `completed` or `failed` for the turn outcome. These diagnostics
+apply to turns running the new release, not workers already running older code.
+Assistant text can include intermediate explanations across multiple
 blocks; keep blocks separate rather than concatenating all text into a final answer.
 
 On disconnect, reconnect to the same URL with `Last-Event-ID: <last processed id>`;

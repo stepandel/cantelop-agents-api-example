@@ -34,3 +34,14 @@ test("legacy cached summaries upgrade without duplicating the turn", () => {
   assert.equal(session.turns.length, 1);
   assert.deepEqual(session.turns[0].tools, tools);
 });
+
+test("running snapshots restore diagnostic phase and tools without replay", () => {
+  const h = harness();
+  const session: any = { id: "issue-1", turns: [] };
+  const runtimeStatus = { phase: "opencode_retry", attempt: 2 };
+  const tools = [{ partId: "p", tool: "read", status: "running" }];
+  h.applySnapshot(session, { messageId: "m1", prompt: "Issue", status: "running", runtimeStatus, tools });
+  assert.equal(session.turns[0].phase, "opencode_retry");
+  assert.deepEqual(session.turns[0].runtimeStatus, runtimeStatus);
+  assert.deepEqual(session.turns[0].tools, tools);
+});

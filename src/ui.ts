@@ -667,6 +667,10 @@ dialog::backdrop { background: rgba(20, 18, 14, .45); backdrop-filter: blur(2px)
         target.stream = '/turns/events?sessionId=' + encodeURIComponent(s.id) + '&messageId=' + encodeURIComponent(d.messageId);
       }
       if (d.status !== 'running') finishStored(target, s, d);
+      else {
+        if (d.runtimeStatus) { target.phase = d.runtimeStatus.phase; target.runtimeStatus = d.runtimeStatus; }
+        if (Array.isArray(d.tools)) target.tools = d.tools;
+      }
       changed = true;
     }
     // Worker snapshots also carry the durable message queue for turns this browser dispatched.
@@ -736,8 +740,11 @@ dialog::backdrop { background: rgba(20, 18, 14, .45); backdrop-filter: blur(2px)
   function phaseText(t) {
     if (t.status === 'queued') return t.mode === 'steer' ? 'Steering — waiting for the active turn to stop' : 'Queued — waiting for earlier messages';
     if (t.status === 'running') {
+      var runtime = t.runtimeStatus || {};
+      if (t.phase === 'opencode_retry') return 'Model request retrying' + (runtime.attempt !== undefined ? ' (attempt ' + runtime.attempt + ')' : '');
+      if (t.phase === 'opencode_error') return 'OpenCode reported an error' + (runtime.code ? ': ' + runtime.code : '') + (runtime.statusCode ? ' (HTTP ' + runtime.statusCode + ')' : '') + '; waiting for turn outcome';
       if (!t.phase) return 'Dispatched — waiting for the session to start';
-      return { started: 'Session started', waiting_for_workspace: 'Waiting for the shared workspace lock', checkout: 'Checking out the repository', agent_starting: 'Starting the agent', working: 'Agent is working', elsewhere: 'Agent is running; started outside this tab, so progress is refreshed from the session index' }[t.phase] || t.phase;
+      return { validate_model: 'Checking model availability', create_session: 'Opening the OpenCode conversation', waiting_for_model: 'Waiting for the model response', opencode_busy: 'OpenCode is working', opencode_idle: 'OpenCode is idle; waiting for turn outcome', opencode_reasoning: 'Model is reasoning', started: 'Session started', waiting_for_workspace: 'Waiting for the shared workspace lock', checkout: 'Checking out the repository', agent_starting: 'Starting the agent', working: 'Agent is working', elsewhere: 'Agent is running; started outside this tab, so progress is refreshed from the session index' }[t.phase] || t.phase;
     }
     if (t.status === 'disconnected') return 'Stream interrupted. The agent may still be running.';
     var took = t.finishedAt && t.startedAt ? ' in ' + Math.max(1, Math.round((t.finishedAt - t.startedAt) / 1000)) + 's' : '';
@@ -793,7 +800,7 @@ dialog::backdrop { background: rgba(20, 18, 14, .45); backdrop-filter: blur(2px)
     switch (p.type) {
       case 'queued': t.status = 'queued'; t.mode = d.mode || t.mode || 'queue'; break;
       case 'started': t.status = 'running'; t.phase = t.phase || 'started'; break;
-      case 'status': t.status = 'running'; t.phase = d.phase; break;
+      case 'status': t.status = 'running'; t.phase = d.phase; t.runtimeStatus = d; break;
       case 'text.delta': case 'text.replace': {
         t.phase = 'working';
         var b = null; for (var i = 0; i < t.blocks.length; i++) if (t.blocks[i].partId === d.partId) b = t.blocks[i];

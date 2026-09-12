@@ -63,7 +63,7 @@ test("OpenCode mapping isolates assistant text, suppresses snapshot duplicates a
   assert.deepEqual(map.accept(updated({ ...text, text: "Hello world" })), [{ type: "text.delta", data: { partId: "part", text: " world" } }]);
   assert.deepEqual(map.accept(updated({ ...text, text: "Correction" })), [{ type: "text.replace", data: { partId: "part", text: "Correction" } }]);
   assert.deepEqual(map.accept(updated({ ...text, sessionID: "other", text: "private" })), []);
-  assert.deepEqual(map.accept(updated({ ...text, id: "reasoning", type: "reasoning", text: "private" })), []);
+  assert.deepEqual(map.accept(updated({ ...text, id: "reasoning", type: "reasoning", text: "private" })), [{ type: "status", data: { phase: "opencode_reasoning" } }]);
   const tool = { ...text, id: "tool", type: "tool", tool: "bash", state: { status: "running", input: { command: "private" }, title: "private", output: "secret" } };
   assert.deepEqual(map.accept(updated(tool)), [{ type: "tool.status", data: { partId: "tool", tool: "bash", status: "running" } }]);
   assert.deepEqual(map.accept(updated(tool)), []);
@@ -99,4 +99,17 @@ test("OpenCode subscription precedes prompt and emits text while prompt is still
   });
   assert.equal(result, "done");
   assert.deepEqual(emitted, [{ type: "text.delta", data: { partId: "p", text: "Streaming" } }, { type: "text.delta", data: { partId: "p", text: " tail" } }]);
+});
+
+test("runtime statuses isolate sessions, redact provider details and deduplicate", () => {
+  const map = new OpenCodeProgress("session");
+  const retry = { type: "session.status", properties: { sessionID: "session", status: { type: "retry", attempt: 2, next: 1234, message: "SECRET provider body" } } };
+  assert.deepEqual(map.accept({ ...retry, properties: { ...retry.properties, sessionID: "other" } }), []);
+  assert.deepEqual(map.accept(retry), [{ type: "status", data: { phase: "opencode_retry", attempt: 2, next: 1234 } }]);
+  assert.deepEqual(map.accept(retry), []);
+  const error = { name: "APIError", data: { statusCode: 429, message: "SECRET", responseBody: "SECRET", headers: { authorization: "SECRET" } } };
+  assert.deepEqual(map.accept({ type: "session.error", properties: { error } }), []);
+  assert.deepEqual(map.accept({ type: "session.error", properties: { sessionID: "session", error } }), [{ type: "status", data: { phase: "opencode_error", code: "APIError", statusCode: 429 } }]);
+  assert.deepEqual(map.accept({ type: "session.error", properties: { sessionID: "session", error: { name: "SECRET", data: { statusCode: "SECRET" } } } }), [{ type: "status", data: { phase: "opencode_error", code: "UnknownError" } }]);
+  assert.deepEqual(map.accept({ type: "session.idle", properties: { sessionID: "session" } }), [{ type: "status", data: { phase: "opencode_idle" } }]);
 });

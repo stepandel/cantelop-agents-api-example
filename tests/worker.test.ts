@@ -166,3 +166,19 @@ test("webhook and API turns persist stream identity and tool summaries", async t
     assert.equal(next.tools?.length, 1);
   }
 });
+
+test("runtime status and tool activity are inspectable before the turn finishes", async t => {
+  const h = await harness(t);
+  h.deps.runAgent = async options => {
+    await options.onProgress!({ type: "status", data: { phase: "opencode_retry", attempt: 2 } });
+    await options.onProgress!({ type: "tool.status", data: { partId: "p", tool: "read", status: "running" } });
+    const result = await h.run({ type: "inspect", sessionId: "live" }, "inspect");
+    const stored = result.data as any;
+    assert.equal(stored.status, "running");
+    assert.deepEqual(stored.runtimeStatus, { phase: "opencode_retry", attempt: 2 });
+    assert.equal(stored.tools[0].status, "running");
+    assert.ok(stored.lastProgressAt);
+    return "Done";
+  };
+  await h.run({ type: "create", spec: { sessionId: "live", model, repository: "owner/repo", prompt: "Start" } }, "m1");
+});

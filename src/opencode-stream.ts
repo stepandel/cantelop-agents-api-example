@@ -7,19 +7,50 @@ const record = (value: unknown): value is RecordValue => value !== null && typeo
 export class OpenCodeProgress {
   private assistants = new Set<string>();
   private parts = new Map<string, { messageId: string; type: string; text: string; status?: string }>();
+  private lastStatus = "";
   constructor(private sessionId: string) {}
+  private status(data: Record<string, unknown>): Progress[] {
+    const key = JSON.stringify(data);
+    if (key === this.lastStatus) return [];
+    this.lastStatus = key;
+    return [{ type: "status", data }];
+  }
+  private error(value: unknown): Progress[] {
+    const error = record(value) ? value : {};
+    const names = ["ProviderAuthError", "APIError", "UnknownError", "MessageOutputLengthError", "MessageAbortedError"];
+    const code = names.includes(error.name) ? error.name : "UnknownError";
+    const statusCode = error.data?.statusCode;
+    return this.status({ phase: "opencode_error", code,
+      ...(Number.isInteger(statusCode) && statusCode >= 100 && statusCode <= 599 ? { statusCode } : {}) });
+  }
   accept(value: unknown): Progress[] {
     if (!record(value) || !record(value.properties)) return [];
     const p = value.properties;
+    if (p.sessionID === this.sessionId) {
+      if (value.type === "session.error") return this.error(p.error);
+      if (value.type === "session.idle") return this.status({ phase: "opencode_idle" });
+      if (value.type === "session.status" && record(p.status)) {
+        const status = p.status;
+        if (status.type === "busy" || status.type === "idle") return this.status({ phase: "opencode_" + status.type });
+        if (status.type === "retry") return this.status({ phase: "opencode_retry",
+          ...(Number.isSafeInteger(status.attempt) && status.attempt >= 0 ? { attempt: status.attempt } : {}),
+          ...(Number.isSafeInteger(status.next) && status.next >= 0 ? { next: status.next } : {}) });
+      }
+    }
     if (value.type === "message.updated" && p.info?.sessionID === this.sessionId && p.info.role === "assistant") {
       if (this.assistants.size > 10000) throw new Error("Too many streamed messages");
-      this.assistants.add(p.info.id); return [];
+      this.assistants.add(p.info.id); return p.info.error ? this.error(p.info.error) : [];
     }
     if (value.type === "message.part.updated") {
       const part = p.part;
       if (!record(part) || part.sessionID !== this.sessionId || !this.assistants.has(part.messageID) || typeof part.id !== "string") return [];
       if (this.parts.size > 10000) throw new Error("Too many streamed parts");
       const old = this.parts.get(part.id);
+      if (part.type === "reasoning") {
+        if (old) return [];
+        this.parts.set(part.id, { messageId: part.messageID, type: "reasoning", text: "" });
+        return this.status({ phase: "opencode_reasoning" });
+      }
       if (part.type === "text" && typeof part.text === "string") {
         this.parts.set(part.id, { messageId: part.messageID, type: "text", text: part.text });
         const prior = old?.text ?? "";
