@@ -147,6 +147,17 @@ branch, then posts a summary comment on the issue. Updating the default or a rul
 issue sessions; existing sessions retain their original model. No live GitHub
 writes occur during scaffold tests or setup.
 
+## Application logs
+
+The trace UI receives structured JSON console logs with `component: agent-api`.
+API rejections log at warning level and unexpected failures at error level, with
+HTTP method, route, status and a safe reason code. Webhook decisions also include
+available delivery ID, event/action, repository and issue number. Accepted and
+ignored deliveries log at info level. Session dispatch, start and outcome logs
+include message IDs so they can be correlated across API and runtime traces.
+Logs omit credentials, signatures, prompts, issue titles/bodies and raw exception
+messages. Live text and tool progress remain in session events rather than logs.
+
 ## Recovery and limits
 
 - Receipts deduplicate by repository + issue number, including redeliveries with

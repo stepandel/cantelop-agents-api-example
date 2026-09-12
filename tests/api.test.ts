@@ -91,3 +91,40 @@ test("dispatch returns a turn stream URL; turn streaming validates identity and 
   assert.equal(response.headers.get("content-type"), "text/event-stream");
   await response.body?.cancel();
 });
+
+test("webhook logs explain rejection and decisions without payloads or credentials", async t => {
+  const logs: { level: string; entry: Record<string, unknown> }[] = [];
+  for (const level of ["info", "warn", "error"] as const) {
+    t.mock.method(console, level, (line: string) => logs.push({ level, entry: JSON.parse(line) }));
+  }
+  const h = harness();
+  const payload = { action: "opened", repository: { full_name: "other/repo" }, issue: { number: 42, title: "private-title", body: "private-body", author_association: "OWNER" } };
+  const headers = (value: unknown) => ({ "x-github-event": "issues", "x-github-delivery": "delivery-log-test", authorization: "Bearer private-token", "x-hub-signature-256": `sha256=${createHmac("sha256", "webhook-secret").update(JSON.stringify(value)).digest("hex")}` });
+  assert.equal((await h.request("/webhooks/github", payload, headers(payload))).status, 400);
+  assert.deepEqual(logs.at(-1), { level: "warn", entry: { component: "agent-api", event: "webhook.rejected", method: "POST", path: "/webhooks/github", status: 400, deliveryId: "delivery-log-test", githubEvent: "issues", action: "opened", repository: "other/repo", issue: 42, reason: "repository_not_enabled" } });
+  assert.equal(h.commands.length, 0);
+  await h.request("/webhooks/github", payload, {});
+  assert.equal(logs.at(-1)?.entry.reason, "invalid_signature");
+  const ignored = { ...payload, action: "edited" };
+  await h.request("/webhooks/github", ignored, headers(ignored));
+  assert.equal(logs.at(-1)?.entry.event, "webhook.ignored");
+  assert.equal(logs.at(-1)?.entry.reason, "unsupported_action");
+  const accepted = { ...payload, repository: { full_name: "owner/repo" } };
+  await h.request("/webhooks/github", accepted, headers(accepted));
+  assert.equal(logs.at(-1)?.entry.event, "webhook.accepted");
+  assert.ok(logs.some(x => x.entry.event === "session.dispatched" && x.entry.messageId === "message-1"));
+  const serialized = JSON.stringify(logs);
+  for (const secret of ["private-title", "private-body", "private-token", "webhook-secret", "sha256="]) assert.equal(serialized.includes(secret), false);
+});
+
+test("unexpected dispatch errors are logged without exception secrets", async t => {
+  const logs: string[] = [];
+  t.mock.method(console, "error", (line: string) => logs.push(line));
+  const app = { sessions: { open() { return { dispatch() { throw new Error("upstream credential: private-secret"); } }; } } } as unknown as CantelopApp<Command>;
+  const router = api.create({ app, env: { API_TOKEN: "api-secret", GITHUB_REPOSITORIES: "owner/repo" } });
+  const response = await router.handle(new Request("https://example.com/sessions", { method: "POST", headers: { authorization: "Bearer api-secret" }, body: JSON.stringify({ repository: "owner/repo", model, prompt: "private-prompt" }) }));
+  assert.equal(response.status, 503);
+  assert.equal(JSON.parse(logs[0]!).reason, "service_unavailable");
+  assert.equal(JSON.parse(logs[0]!).event, "request.failed");
+  assert.equal(logs.join().includes("private-"), false);
+});

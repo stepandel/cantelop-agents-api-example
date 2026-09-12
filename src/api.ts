@@ -2,6 +2,26 @@ import { turnStream } from "./turn-stream.js";
 import { defineApi } from "@cantelop/sdk/api";
 import { issueSessionId, model, object, repository, sessionId, text, type Command } from "./contracts.js";
 
+type RequestLog = { reason?: string; repository?: string; issue?: number; deliveryId?: string; githubEvent?: string; action?: string };
+function label(value: unknown): string | undefined {
+  return typeof value === "string" && /^[a-zA-Z0-9_./-]{1,200}$/.test(value) ? value : undefined;
+}
+function errorReason(error: unknown): string {
+  // Never log raw exception messages: JSON errors and SDK failures may contain inputs or credentials.
+  if (error instanceof SyntaxError) return "invalid_json";
+  const known: Record<string, string> = {
+    "Repository is not enabled": "repository_not_enabled", "Invalid repository": "invalid_repository",
+    "Body exceeds 1 MB": "body_too_large", "Invalid issue number": "invalid_issue_number",
+    "Invalid delivery ID": "invalid_delivery_id", "Invalid OpenRouter model ID": "invalid_model",
+    "Invalid sessionId": "invalid_session_id", "Invalid messageId": "invalid_message_id",
+    "Invalid title": "invalid_title", "Invalid body": "invalid_body", "Invalid prompt": "invalid_prompt",
+    "Invalid author_association": "invalid_author_association", "Expected an object": "invalid_object",
+    "Turn streams require SSE": "sse_required",
+  };
+  if (error instanceof Error && Object.hasOwn(known, error.message)) return known[error.message]!;
+  return error instanceof TypeError || error instanceof RangeError ? "invalid_request" : "service_unavailable";
+}
+
 export async function verifySignature(body: Uint8Array, signature: string | null, secret: string): Promise<boolean> {
   if (!signature || !/^sha256=[0-9a-f]{64}$/.test(signature)) return false;
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
@@ -32,16 +52,32 @@ export default defineApi<Command>(({ app, env, router }) => {
       : command.type === "issue" ? await issueSessionId(command.issue.repository, command.issue.number)
       : command.type === "rule" ? `rule-${crypto.randomUUID()}` : command.sessionId;
     const message = await worker(id).dispatch(command);
+    console.info(JSON.stringify({ component: "agent-api", event: "session.dispatched", command: command.type, sessionId: id, messageId: message.id }));
     return Response.json({ messageId: message.id, state: "accepted", sessionId: id, events: `/events?sessionId=${encodeURIComponent(id)}`, stream: `/turns/events?sessionId=${encodeURIComponent(id)}&messageId=${encodeURIComponent(message.id)}` }, { status: 202 });
   }
-  function route(method: "GET" | "POST" | "PUT", path: string, auth: boolean, handler: (request: Request) => Promise<Response>) {
+  function route(method: "GET" | "POST" | "PUT", path: string, auth: boolean, handler: (request: Request, context: RequestLog) => Promise<Response>) {
     router.route(method, path, async ({ request }) => {
-      if (auth && (!env.API_TOKEN || request.headers.get("authorization") !== `Bearer ${env.API_TOKEN}`)) return Response.json({ error: "Unauthorized" }, { status: 401 });
-      try { return await handler(request); }
-      catch (error) {
+      const webhook = path === "/webhooks/github";
+      const context: RequestLog = webhook ? { deliveryId: label(request.headers.get("x-github-delivery")), githubEvent: label(request.headers.get("x-github-event")) } : {};
+      let response: Response;
+      try {
+        if (auth && (!env.API_TOKEN || request.headers.get("authorization") !== `Bearer ${env.API_TOKEN}`)) {
+          context.reason = "unauthorized";
+          response = Response.json({ error: "Unauthorized" }, { status: 401 });
+        } else response = await handler(request, context);
+      } catch (error) {
         const status = error instanceof RangeError ? 413 : error instanceof TypeError || error instanceof SyntaxError ? 400 : 503;
-        return Response.json({ error: status === 503 ? "Service unavailable" : (error as Error).message }, { status });
+        context.reason = errorReason(error);
+        response = Response.json({ error: status === 503 ? "Service unavailable" : (error as Error).message }, { status });
       }
+      if (webhook || response.status >= 400) {
+        const outcome = response.status >= 500 ? "failed" : response.status >= 400 ? "rejected" : response.status === 202 ? "accepted" : "ignored";
+        const log = JSON.stringify({ component: "agent-api", event: `${webhook ? "webhook" : "request"}.${outcome}`, method, path, status: response.status, ...context });
+        if (response.status >= 500) console.error(log);
+        else if (response.status >= 400) console.warn(log);
+        else console.info(log);
+      }
+      return response;
     });
   }
   const body = async (request: Request) => object(JSON.parse(new TextDecoder().decode(await bodyBytes(request))));
@@ -71,17 +107,20 @@ export default defineApi<Command>(({ app, env, router }) => {
     const v = await body(request);
     return dispatch({ type: "rule", repository: repository(v.repository, env.GITHUB_REPOSITORIES), model: model(v.model) });
   });
-  route("POST", "/webhooks/github", false, async request => {
-    if (!env.GITHUB_WEBHOOK_SECRET) return Response.json({ error: "Webhook not configured" }, { status: 503 });
+  route("POST", "/webhooks/github", false, async (request, context) => {
+    if (!env.GITHUB_WEBHOOK_SECRET) { context.reason = "webhook_not_configured"; return Response.json({ error: "Webhook not configured" }, { status: 503 }); }
     const raw = await bodyBytes(request);
-    if (!await verifySignature(raw, request.headers.get("x-hub-signature-256"), env.GITHUB_WEBHOOK_SECRET)) return Response.json({ error: "Invalid signature" }, { status: 401 });
-    if (request.headers.get("x-github-event") !== "issues") return Response.json({ ignored: true });
+    if (!await verifySignature(raw, request.headers.get("x-hub-signature-256"), env.GITHUB_WEBHOOK_SECRET)) { context.reason = "invalid_signature"; return Response.json({ error: "Invalid signature" }, { status: 401 }); }
+    if (request.headers.get("x-github-event") !== "issues") { context.reason = "unsupported_event"; return Response.json({ ignored: true }); }
     const v = object(JSON.parse(new TextDecoder().decode(raw)));
-    if (v.action !== "opened") return Response.json({ ignored: true });
+    context.action = label(v.action);
+    if (v.action !== "opened") { context.reason = "unsupported_action"; return Response.json({ ignored: true }); }
     const issue = object(v.issue);
+    context.repository = label(object(v.repository).full_name);
+    context.issue = Number.isSafeInteger(issue.number) && Number(issue.number) > 0 ? Number(issue.number) : undefined;
     const repo = repository(object(v.repository).full_name, env.GITHUB_REPOSITORIES);
     const association = text(issue.author_association, "author_association", 30);
-    if (!["OWNER", "MEMBER", "COLLABORATOR"].includes(association)) return Response.json({ ignored: true, reason: "untrusted issue author" });
+    if (!["OWNER", "MEMBER", "COLLABORATOR"].includes(association)) { context.reason = "untrusted_issue_author"; return Response.json({ ignored: true, reason: "untrusted issue author" }); }
     if (!Number.isSafeInteger(issue.number) || Number(issue.number) <= 0) throw new TypeError("Invalid issue number");
     return dispatch({ type: "issue", deliveryId: text(request.headers.get("x-github-delivery"), "delivery ID", 100), issue: { repository: repo, number: Number(issue.number), title: text(issue.title, "title", 1000), body: issue.body == null || issue.body === "" ? "" : text(issue.body, "body"), association } });
   });
