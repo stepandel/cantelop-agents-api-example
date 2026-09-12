@@ -177,7 +177,7 @@ writes occur during scaffold tests or setup.
   `SIGKILL` alone does not prove OOM. Activity cancellation persists failure when
   cleanup runs, but may prevent delivery of a final event; inspect the session.
   Abrupt VM/process termination still cannot guarantee cleanup or a final write.
-- This version has no live token stream, cancellation endpoint, UI,
+- This version has no cancellation endpoint, UI,
   automatic PR creation, or state retention cleanup.
 - All sessions can see the shared filesystem. Agent instructions are guidance,
   not a security boundary. API/webhook secrets are excluded from subprocess env;
@@ -239,3 +239,45 @@ secret set`, and ordinary variables to `cantelop app env set`. It does not print
 values, upload undeclared settings, or overwrite remote values with blank entries.
 Missing required local settings stop the upload before any changes. Uploads are
 sequential, not atomic; retry the command if a later setting fails.
+
+## Streaming a turn
+
+Session creation and follow-up responses now include a `stream` URL alongside
+`sessionId`, `messageId`, and the existing session-wide `events` URL. Subscribe to
+`stream` for a clean SSE feed that closes when that request emits its terminal
+result. API authentication is required on both endpoints.
+
+```sh
+request=$(curl -fsS https://cantelop-agents-api-example.cantelop.dev/sessions \
+  -H "Authorization: Bearer $API_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"repository":"stepandel/cantelop","model":"anthropic/claude-sonnet-4.5","prompt":"Explain the architecture. Do not modify files or push."}')
+curl -N --fail-with-body "https://cantelop-agents-api-example.cantelop.dev$(printf '%s' "$request" | jq -r .stream)" \
+  -H "Authorization: Bearer $API_TOKEN"
+```
+
+Each SSE frame has a replay `id`, a named `event`, and a JSON `data` payload
+containing `type`, `messageId`, optional `sessionId`, and event-specific `data`.
+Platform sandbox IDs and transport envelopes are omitted on the turn endpoint.
+
+| Event | Client behavior |
+| --- | --- |
+| `started` | Mark the turn active. |
+| `status` | Show `data.phase`: waiting for workspace, checkout, or agent startup. |
+| `text.delta` | Append `data.text` to the text block identified by `data.partId`. |
+| `text.replace` | Replace that block with `data.text` if OpenCode revises a snapshot. |
+| `tool.status` | Show the tool name and pending/running/completed/error state. |
+| `completed` | Use `data.response` as the authoritative final answer, not an additional delta. |
+| `failed` | Show the safe error/diagnostic; stop waiting. |
+
+`ignored`, `configured`, and inspection `session` events also terminate their
+request streams. Tool arguments/output, raw tool errors, and reasoning are not
+forwarded. Assistant text can include intermediate explanations across multiple
+blocks; keep blocks separate rather than concatenating all text into a final answer.
+
+On disconnect, reconnect to the same URL with `Last-Event-ID: <last processed id>`;
+use the IDs for deduplication. Replay availability follows Cantelop's retention
+policy. Disconnecting only closes the subscription—it does not cancel the agent.
+Close browser EventSource clients on terminal events to prevent automatic
+reconnection. Fetch streaming is convenient for clients using Bearer headers.
+An EOF without a terminal event is a transport interruption, not successful work.
+The original `/events` endpoint remains an unmodified session-wide stream.

@@ -1,3 +1,4 @@
+import { turnStream } from "./turn-stream.js";
 import { defineApi } from "@cantelop/sdk/api";
 import { issueSessionId, model, object, repository, sessionId, text, type Command } from "./contracts.js";
 
@@ -31,7 +32,7 @@ export default defineApi<Command>(({ app, env, router }) => {
       : command.type === "issue" ? await issueSessionId(command.issue.repository, command.issue.number)
       : command.type === "rule" ? `rule-${crypto.randomUUID()}` : command.sessionId;
     const message = await worker(id).dispatch(command);
-    return Response.json({ messageId: message.id, state: "accepted", sessionId: id, events: `/events?sessionId=${encodeURIComponent(id)}` }, { status: 202 });
+    return Response.json({ messageId: message.id, state: "accepted", sessionId: id, events: `/events?sessionId=${encodeURIComponent(id)}`, stream: `/turns/events?sessionId=${encodeURIComponent(id)}&messageId=${encodeURIComponent(message.id)}` }, { status: 202 });
   }
   function route(method: "GET" | "POST" | "PUT", path: string, auth: boolean, handler: (request: Request) => Promise<Response>) {
     router.route(method, path, async ({ request }) => {
@@ -46,6 +47,14 @@ export default defineApi<Command>(({ app, env, router }) => {
   const body = async (request: Request) => object(JSON.parse(new TextDecoder().decode(await bodyBytes(request))));
   route("GET", "/health", false, async () => Response.json({ status: "ok" }));
   route("GET", "/events", true, request => worker(sessionId(new URL(request.url).searchParams.get("sessionId"))).events(request));
+  route("GET", "/turns/events", true, async request => {
+    if (request.headers.get("upgrade")) throw new TypeError("Turn streams require SSE");
+    const url = new URL(request.url);
+    const id = sessionId(url.searchParams.get("sessionId"));
+    const messageId = text(url.searchParams.get("messageId"), "messageId", 100);
+    if (!/^msg_[a-f0-9]{32}$/.test(messageId)) throw new TypeError("Invalid messageId");
+    return turnStream(await worker(id).events(request), messageId);
+  });
   route("POST", "/sessions", true, async request => {
     const v = await body(request);
     return dispatch({ type: "create", spec: { sessionId: crypto.randomUUID(), repository: repository(v.repository, env.GITHUB_REPOSITORIES), model: model(v.model), prompt: text(v.prompt, "prompt") } });

@@ -18,7 +18,8 @@ export function createBehaviour(run = handle, timeoutMs = 30 * 60 * 1000) {
     activity.start(async ({ signal: turnSignal, output: turnOutput }) => {
       let event: Event;
       try {
-        event = await run(process.cwd(), message.payload, message.id, env, turnSignal);
+        await turnOutput.send({ type: "started", messageId: message.id, data: {} });
+        event = await run(process.cwd(), message.payload, message.id, env, turnSignal, undefined, event => turnOutput.send(event));
       } catch {
         event = { type: "failed", messageId: message.id,
           data: { code: turnSignal.aborted ? "turn_cancelled" : "command_failed", error: "Command failed; inspect session state" } };

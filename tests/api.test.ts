@@ -79,3 +79,15 @@ test("rejects provider objects for sessions and issue rules", async () => {
   }
   assert.equal(h.commands.length, 0);
 });
+
+test("dispatch returns a turn stream URL; turn streaming validates identity and authentication", async () => {
+  const h = harness();
+  const created = await (await h.request("/sessions", { repository: "owner/repo", prompt: "Hello", model })).json() as { sessionId: string; stream: string };
+  assert.equal(created.stream, `/turns/events?sessionId=${created.sessionId}&messageId=message-1`);
+  assert.equal((await h.request("/turns/events?sessionId=one", undefined, {}, "GET")).status, 401);
+  assert.equal((await h.request("/turns/events?sessionId=one", undefined, { authorization: "Bearer api-secret" }, "GET")).status, 400);
+  const response = await h.request(`/turns/events?sessionId=one&messageId=msg_${"1".repeat(32)}`, undefined, { authorization: "Bearer api-secret" }, "GET");
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-type"), "text/event-stream");
+  await response.body?.cancel();
+});

@@ -7,8 +7,9 @@ export type Command =
   | { type: "inspect"; sessionId: string }
   | { type: "rule"; repository: string; model: Model }
   | { type: "issue"; deliveryId: string; issue: Issue };
+export type Progress = { type: "started" | "status" | "text.delta" | "text.replace" | "tool.status"; data: unknown };
 export interface Event {
-  type: "completed" | "failed" | "ignored" | "configured" | "session";
+  type: "completed" | "failed" | "ignored" | "configured" | "session" | Progress["type"];
   messageId: string;
   sessionId?: string;
   data?: unknown;

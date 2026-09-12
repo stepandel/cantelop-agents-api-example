@@ -2,7 +2,7 @@ import path from "node:path";
 import { withWorkspaceLock } from "./lock.js";
 import { createHash } from "node:crypto";
 import { agentEnvironment, checkout, readJSON, runAgent, saveJSON, type Env, AgentError } from "./runtime.js";
-import { issueSessionId, model, repository, sessionId, type Command, type Event, type Model, type SessionSpec } from "./contracts.js";
+import { issueSessionId, model, repository, sessionId, type Command, type Event, type Model, type SessionSpec, type Progress } from "./contracts.js";
 export interface StoredSession extends SessionSpec { opencodeId?: string; status: "running" | "completed" | "failed"; response?: string; diagnostic?: unknown }
 export interface Dependencies {
   checkout: typeof checkout;
@@ -20,11 +20,12 @@ export const dependencies: Dependencies = {
     if (!response.ok) throw new Error("GitHub comment failed");
   },
 };
-export async function handle(root: string, command: Command, messageId: string, env: Env, signal: AbortSignal, deps = dependencies): Promise<Event> {
-  if (command.type === "inspect") return handleLocked(root, command, messageId, env, signal, deps);
-  return withWorkspaceLock(root, signal, () => handleLocked(root, command, messageId, env, signal, deps));
+export async function handle(root: string, command: Command, messageId: string, env: Env, signal: AbortSignal, deps = dependencies, emit: (event: Event) => Promise<void> = async () => {}): Promise<Event> {
+  if (command.type === "inspect") return handleLocked(root, command, messageId, env, signal, deps, emit);
+  await emit({ type: "status", messageId, data: { phase: "waiting_for_workspace" } });
+  return withWorkspaceLock(root, signal, () => handleLocked(root, command, messageId, env, signal, deps, emit));
 }
-async function handleLocked(root: string, command: Command, messageId: string, env: Env, signal: AbortSignal, deps: Dependencies): Promise<Event> {
+async function handleLocked(root: string, command: Command, messageId: string, env: Env, signal: AbortSignal, deps: Dependencies, emit: (event: Event) => Promise<void>): Promise<Event> {
   const state = path.join(root, ".agent-api");
   const sessionFile = (id: string) => path.join(state, "sessions", `${sessionId(id)}.json`);
   const rulesFile = path.join(state, "issue-rules.json");
@@ -68,9 +69,12 @@ async function handleLocked(root: string, command: Command, messageId: string, e
   await saveJSON(receiptFile, { status: "started", sessionId: spec.sessionId });
   try {
     await saveJSON(file, stored);
+    await emit(event("status", { phase: "checkout" }, spec.sessionId));
     const agentEnv = agentEnvironment(root, env);
     const directory = await deps.checkout(root, spec.repository, spec.sessionId, agentEnv, signal);
+    await emit(event("status", { phase: "agent_starting" }, spec.sessionId));
     stored.response = await deps.runAgent({ root, directory, env: agentEnv, model: stored.model, prompt: spec.prompt, id: stored.opencodeId, signal,
+      onProgress: (progress: Progress) => emit(event(progress.type, progress.data, spec.sessionId)),
       onCreated: async id => { stored.opencodeId = id; await saveJSON(file, stored); },
     });
     stored.status = "completed";
