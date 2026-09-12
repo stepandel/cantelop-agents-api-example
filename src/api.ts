@@ -1,3 +1,4 @@
+import { sessionDatabase, parseSessionQuery, type SessionDatabase } from "./session-db.js";
 import { turnStream } from "./turn-stream.js";
 import { ui } from "./ui.js";
 import { defineApi } from "@cantelop/sdk/api";
@@ -46,12 +47,12 @@ async function bodyBytes(request: Request): Promise<Uint8Array> {
   for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
   return bytes;
 }
-export default defineApi<Command>(({ app, env, router }) => {
+export const createApi = (databaseFactory = sessionDatabase) => defineApi<Command>(({ app, env, router }) => {
   const worker = (id: string) => app.sessions.open({ id, workspaceSlug: env.WORKSPACE_SLUG ?? "agents", keepAliveSeconds: 300 });
   async function dispatch(command: Command) {
     const id = command.type === "create" ? command.spec.sessionId
       : command.type === "issue" ? await issueSessionId(command.issue.repository, command.issue.number)
-      : command.type === "rule" ? `rule-${crypto.randomUUID()}` : command.sessionId;
+      : command.type === "rule" || command.type === "reindex" ? `${command.type}-${crypto.randomUUID()}` : command.sessionId;
     const message = await worker(id).dispatch(command);
     console.info(JSON.stringify({ component: "agent-api", event: "session.dispatched", command: command.type, sessionId: id, messageId: message.id }));
     return Response.json({ messageId: message.id, state: "accepted", sessionId: id, events: `/events?sessionId=${encodeURIComponent(id)}`, stream: `/turns/events?sessionId=${encodeURIComponent(id)}&messageId=${encodeURIComponent(message.id)}` }, { status: 202 });
@@ -95,6 +96,29 @@ export default defineApi<Command>(({ app, env, router }) => {
     if (!/^msg_[a-f0-9]{32}$/.test(messageId)) throw new TypeError("Invalid messageId");
     return turnStream(await worker(id).events(request), messageId);
   });
+  const readDatabase = async <T>(read: (db: SessionDatabase) => Promise<T>): Promise<T> => {
+    try {
+      const db = databaseFactory(env);
+      if (!db) throw new Error("Session database is not configured");
+      return await read(db);
+    } catch {
+      // SDK/network failures may be TypeErrors and contain connection details.
+      throw new Error("Session database unavailable");
+    }
+  };
+  const queryResponse = (value: unknown, status = 200) => Response.json(value, { status, headers: { "cache-control": "no-store" } });
+  route("GET", "/sessions", true, async request => {
+    const params = new URL(request.url).searchParams;
+    const query = parseSessionQuery(params);
+    if (params.has("repository")) query.repository = repository(params.get("repository"), env.GITHUB_REPOSITORIES);
+    return queryResponse(await readDatabase(db => db.list(query)));
+  });
+  route("GET", "/sessions/inspect", true, async request => {
+    const id = sessionId(new URL(request.url).searchParams.get("sessionId"));
+    const session = await readDatabase(db => db.get(id));
+    return session ? queryResponse({ session }) : queryResponse({ error: "Session not found" }, 404);
+  });
+  route("POST", "/sessions/reindex", true, async () => dispatch({ type: "reindex" }));
   route("POST", "/sessions", true, async request => {
     const v = await body(request);
     return dispatch({ type: "create", spec: { sessionId: crypto.randomUUID(), repository: repository(v.repository, env.GITHUB_REPOSITORIES), model: model(v.model), prompt: text(v.prompt, "prompt") } });
@@ -129,3 +153,5 @@ export default defineApi<Command>(({ app, env, router }) => {
     return dispatch({ type: "issue", deliveryId: text(request.headers.get("x-github-delivery"), "delivery ID", 100), issue: { repository: repo, number: Number(issue.number), title: text(issue.title, "title", 1000), body: issue.body == null || issue.body === "" ? "" : text(issue.body, "body"), association } });
   });
 });
+
+export default createApi();

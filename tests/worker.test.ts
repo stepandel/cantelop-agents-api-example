@@ -52,7 +52,9 @@ test("failed side effects are not automatically replayed", async t => {
   assert.equal((await h.run(command, "m1")).type, "failed");
 });
 test("API and webhook secrets are absent from agent subprocess environment", () => {
-  const actual = agentEnvironment("/workspace", { ...env, API_TOKEN: "private-api", GITHUB_WEBHOOK_SECRET: "private-webhook", ANTHROPIC_API_KEY: "unused", OPENAI_API_KEY: "unused" });
+  const actual = agentEnvironment("/workspace", { ...env, SESSION_DATABASE_AUTH_TOKEN: "private-db", SESSION_DATABASE_URL: "https://private-db.example", API_TOKEN: "private-api", GITHUB_WEBHOOK_SECRET: "private-webhook", ANTHROPIC_API_KEY: "unused", OPENAI_API_KEY: "unused" });
+  assert.equal(actual.SESSION_DATABASE_AUTH_TOKEN, undefined);
+  assert.equal(actual.SESSION_DATABASE_URL, undefined);
   assert.equal(actual.API_TOKEN, undefined);
   assert.equal(actual.GITHUB_WEBHOOK_SECRET, undefined);
   assert.equal(actual.ANTHROPIC_API_KEY, undefined);

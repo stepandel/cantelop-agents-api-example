@@ -2,6 +2,7 @@ export type Model = string;
 export interface SessionSpec { sessionId: string; repository: string; model: Model; prompt: string }
 export interface Issue { number: number; title: string; body: string; repository: string; association: string }
 export type Command =
+  | { type: "reindex" }
   | { type: "create"; spec: SessionSpec }
   | { type: "prompt"; sessionId: string; prompt: string }
   | { type: "inspect"; sessionId: string }
