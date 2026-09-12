@@ -8,6 +8,35 @@ import { agentEnvironment, checkout, git, CommandError } from "../src/runtime.js
 import type { Command } from "../src/contracts.js";
 const env = { GITHUB_TOKEN: "test-only", OPENROUTER_API_KEY: "test-openrouter", GITHUB_REPOSITORIES: "owner/repo" };
 const model = "anthropic/claude-sonnet-4.5";
+test("issue comment follow-ups retain conversation and deduplicate by comment identity", async t => {
+  const h = await harness(t);
+  const { issueReplyMarker, issueSessionId } = await import("../src/contracts.js");
+  const comment: Command = { type: "issue_comment", deliveryId: "d1", repository: "owner/repo", number: 9, commentId: 123, body: "proceed", association: "OWNER" };
+  assert.equal((await h.run(comment, "missing")).type, "ignored");
+  assert.equal(h.runs.length, 0);
+  await h.run({ type: "rule", repository: "owner/repo", model }, "rule");
+  await h.run({ type: "issue", deliveryId: "opened", issue: { repository: "owner/repo", number: 9, title: "Fix", body: "Fix", association: "OWNER" } }, "initial");
+  await h.run({ type: "rule", repository: "owner/repo", model: "different/model" }, "rule2");
+  const result = await h.run(comment, "followup");
+  assert.equal(result.type, "completed");
+  assert.equal(result.sessionId, await issueSessionId("owner/repo", 9));
+  assert.equal(h.runs[1]?.id, "opencode-1");
+  assert.equal(h.runs[1]?.model, model);
+  assert.match(h.runs[1]!.prompt, /proceed/);
+  assert.match(String((h.comments[1] as unknown[])[2]), /cantelop-agent-reply/);
+  await h.run({ ...comment, deliveryId: "redelivery" }, "duplicate");
+  assert.equal(h.runs.length, 2);
+  assert.equal(h.comments.length, 2);
+  for (const ignored of [{ ...comment, commentId: 124, association: "NONE" }, { ...comment, commentId: 125, body: issueReplyMarker }]) {
+    assert.equal((await h.run(ignored, `ignored-${ignored.commentId}`)).type, "ignored");
+  }
+  h.deps.runAgent = async () => { throw new Error("private provider failure"); };
+  const failure = { ...comment, commentId: 126 };
+  assert.equal((await h.run(failure, "failure")).type, "failed");
+  h.deps.runAgent = async () => { assert.fail("failed comment must not replay"); };
+  assert.equal((await h.run({ ...failure, deliveryId: "retry" }, "failure-repeat")).type, "failed");
+  assert.equal(h.comments.length, 2);
+});
 async function harness(t: { after: (fn: () => Promise<void>) => void }) {
   const root = await mkdtemp(path.join(os.tmpdir(), "cantelop-test-"));
   t.after(() => rm(root, { recursive: true, force: true }));

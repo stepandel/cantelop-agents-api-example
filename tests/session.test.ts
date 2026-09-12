@@ -44,6 +44,27 @@ async function harness(t: TestContext, run: typeof handle, root?: string, databa
   return { send, request, events, until, id, root };
 }
 
+test("issue comments queue behind active work and preserve FIFO order", async t => {
+  let release!: () => void;
+  const work = new Promise<void>(resolve => { release = resolve; });
+  const seen: string[] = [];
+  const h = await harness(t, async (_root, command, messageId) => {
+    seen.push(command.type);
+    if (command.type === "prompt") await work;
+    return { type: "completed", messageId };
+  });
+  t.after(release);
+  await h.send(1, { type: "prompt", sessionId: "one", prompt: "first" });
+  await h.until(() => seen.length === 1);
+  await h.send(2, { type: "issue_comment", deliveryId: "d", repository: "owner/repo", number: 9, commentId: 123, body: "proceed", association: "OWNER" });
+  await h.until(() => h.events.some(event => event.type === "queued"));
+  assert.deepEqual(seen, ["prompt"]);
+  release();
+  await h.until(() => h.events.some(event => event.type === "completed" && event.messageId === h.id(2)));
+  assert.deepEqual(seen, ["prompt", "issue_comment"]);
+  await h.until(async () => (await h.request("/runtime")).quiescent);
+});
+
 test("queues FIFO beyond message deadlines, permits inspection, and continues after failure", async t => {
   let release!: () => void;
   const work = new Promise<void>(resolve => { release = resolve; });

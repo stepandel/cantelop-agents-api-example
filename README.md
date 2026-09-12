@@ -308,18 +308,29 @@ In the repository's Settings → Webhooks, add:
 - Payload URL: `https://YOUR_APP.cantelop.dev/webhooks/github`
 - Content type: `application/json`
 - Secret: the same value as `GITHUB_WEBHOOK_SECRET`
-- Events: **Issues**
+- Events: **Issues** and **Issue comments**
 
-Only `issues.opened` is processed. The raw body is verified with HMAC-SHA256;
+`issues.opened` starts a session; `issue_comment.created` continues that issue's
+existing session. The raw body is verified with HMAC-SHA256;
 unknown repositories are rejected. Only issues from `OWNER`, `MEMBER` and
 `COLLABORATOR` authors initiate runs. Other authors/actions are ignored. If neither a repository rule nor
 `GITHUB_ISSUE_MODEL` is available, the worker emits `ignored` without starting an
 agent. Configure a model and redeliver the webhook to process it.
 
-Issue comments (`issue_comment`), including comments by the issue owner, do not
-continue the session. Send follow-ups through the web console or
-`POST /sessions/messages` using the issue's existing session ID. Subscribing the
-webhook to comment events alone does not enable comment follow-ups.
+New comments from `OWNER`, `MEMBER`, or `COLLABORATOR` users queue follow-ups in
+the issue's existing session, retaining its model and conversation. The comment's
+author determines eligibility, independently of the original issue author.
+Comments on issues without an existing session are ignored. Pull request comments,
+bot comments, edited/deleted comments, and the app's own marked replies are ignored.
+The app also recognizes its older `Cantelop session` replies to prevent loops when
+the GitHub token belongs to a human user. Successful comment turns post a marked
+summary back to the issue. Duplicate comment deliveries never rerun admitted work,
+including failed or interrupted turns; post a new comment to request another try.
+
+For existing installations, deploy this update and enable **Issue comments** in
+the webhook settings. Old comments are not fetched automatically; post a new
+comment or redeliver its original webhook after enabling support. Follow-ups also
+remain available through the web console and `POST /sessions/messages`.
 
 The worker asks OpenCode to implement, test, commit and push a fix on its agent
 branch, then posts a summary comment on the issue. Updating the default or a rule affects future

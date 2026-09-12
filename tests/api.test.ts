@@ -16,6 +16,42 @@ function harness() {
   return { commands, opens, request: (path: string, body: unknown, headers: Record<string, string> = { authorization: "Bearer api-secret" }, method = "POST") => router.handle(new Request(`https://example.com${path}`, { method, headers, body: JSON.stringify(body) })) };
 }
 const model = "anthropic/claude-sonnet-4.5";
+test("signed issue comments route to the issue actor and ignore bots, replies and PRs", async () => {
+  const h = harness();
+  const payload = { action: "created", repository: { full_name: "owner/repo" }, issue: { number: 9, author_association: "NONE" },
+    comment: { id: 123, body: "proceed", author_association: "OWNER", user: { type: "User" } } };
+  const send = (value: unknown, delivery = "comment-delivery") => h.request("/webhooks/github", value, {
+    "x-github-event": "issue_comment", "x-github-delivery": delivery,
+    "x-hub-signature-256": `sha256=${createHmac("sha256", "webhook-secret").update(JSON.stringify(value)).digest("hex")}`,
+  });
+  assert.equal((await h.request("/webhooks/github", payload, {})).status, 401);
+  const { issueSessionId, issueReplyMarker } = await import("../src/contracts.js");
+  const response = await send(payload);
+  assert.equal(response.status, 202);
+  assert.equal((await response.json() as { sessionId: string }).sessionId, await issueSessionId("owner/repo", 9));
+  await send(payload, "redelivery");
+  assert.deepEqual(h.opens[0], h.opens[1]);
+  assert.deepEqual(h.commands[0], { type: "issue_comment", deliveryId: "comment-delivery", repository: "owner/repo", number: 9, commentId: 123, body: "proceed", association: "OWNER" });
+  for (const value of [
+    { ...payload, action: "edited" },
+    { ...payload, action: "deleted" },
+    { ...payload, issue: { ...payload.issue, pull_request: {} } },
+    { ...payload, comment: { ...payload.comment, author_association: "NONE" } },
+    { ...payload, comment: { ...payload.comment, user: { type: "Bot" } } },
+    { ...payload, comment: { ...payload.comment, body: `${issueReplyMarker}\nDone` } },
+    { ...payload, comment: { ...payload.comment, body: "Cantelop session `issue-test`\n\nDone" } },
+  ]) {
+    const ignored = await send(value);
+    assert.equal(ignored.status, 200);
+    assert.deepEqual(await ignored.json(), { ignored: true });
+  }
+  for (const value of [
+    { ...payload, repository: { full_name: "other/repo" } },
+    { ...payload, comment: { ...payload.comment, id: -1 } },
+    { ...payload, comment: { ...payload.comment, body: "" } },
+  ]) assert.equal((await send(value)).status, 400);
+  assert.equal(h.commands.length, 2);
+});
 test("new session requires a model and authentication; opens a distinct actor in the shared workspace", async () => {
   const h = harness();
   const spec = { repository: "owner/repo", prompt: "Fix tests", model };
@@ -46,10 +82,6 @@ test("verifies raw webhook signatures, ignores other actions and untrusted autho
   assert.equal((await h.request("/webhooks/github", { ...payload, action: "edited" }, headers(payload))).status, 401);
   const edited = { ...payload, action: "edited" };
   assert.equal((await h.request("/webhooks/github", edited, headers(edited))).status, 200);
-  const comment = { ...payload, action: "created", comment: { body: "proceed", author_association: "OWNER" } };
-  const commentResponse = await h.request("/webhooks/github", comment, { ...headers(comment), "x-github-event": "issue_comment" });
-  assert.deepEqual(await commentResponse.json(), { ignored: true });
-  assert.equal(h.commands.length, 0);
   const untrusted = { ...payload, issue: { ...payload.issue, author_association: "NONE" } };
   assert.equal((await h.request("/webhooks/github", untrusted, headers(untrusted))).status, 200);
   assert.equal((await h.request("/webhooks/github", payload, headers(payload))).status, 202);

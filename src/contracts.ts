@@ -8,7 +8,12 @@ export type Command =
   | { type: "cancel"; sessionId: string }
   | { type: "inspect"; sessionId: string }
   | { type: "rule"; repository: string; model: Model }
-  | { type: "issue"; deliveryId: string; issue: Issue };
+  | { type: "issue"; deliveryId: string; issue: Issue }
+  | { type: "issue_comment"; deliveryId: string; repository: string; number: number; commentId: number; body: string; association: string };
+export const issueReplyMarker = "<!-- cantelop-agent-reply -->";
+export function isAgentReply(body: string): boolean {
+  return body.includes(issueReplyMarker) || /^Cantelop session `[^`]+`/.test(body.trimStart());
+}
 export type Progress = { type: "queued" | "started" | "status" | "text.delta" | "text.replace" | "tool.status"; data: unknown };
 export interface Event {
   type: "completed" | "cancelled" | "failed" | "ignored" | "configured" | "session" | Progress["type"];

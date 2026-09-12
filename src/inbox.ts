@@ -47,7 +47,7 @@ export class Inbox {
     return this.transaction(state => {
       const pending = state.jobs.filter(job => job.state === "queued");
       const first = pending[0];
-      const job = first && first.command.type !== "prompt" ? first
+      const job = first && first.command.type !== "prompt" && first.command.type !== "issue_comment" ? first
         : pending.find(job => job.command.type === "prompt" && job.command.mode === "steer") ?? first;
       if (job) job.state = "running";
       return job;

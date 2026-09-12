@@ -3,7 +3,7 @@ import path from "node:path";
 import { withWorkspaceLock } from "./lock.js";
 import { createHash } from "node:crypto";
 import { agentEnvironment, agentFailureMessage, checkout, commandFailureMessage, CommandError, readJSON, runAgent, saveJSON, type Env, AgentError } from "./runtime.js";
-import { issueSessionId, model, repository, sessionId, type Command, type Event, type Model, type SessionSpec, type Progress } from "./contracts.js";
+import { isAgentReply, issueReplyMarker, issueSessionId, model, repository, sessionId, type Command, type Event, type Model, type SessionSpec, type Progress } from "./contracts.js";
 import { sessionDatabase, type SessionDatabase, type StoredSession } from "./session-db.js";
 export type { StoredSession } from "./session-db.js";
 export interface Dependencies {
@@ -50,7 +50,8 @@ async function handleLocked(root: string, command: Exclude<Command, { type: "rei
   }
   // Persist an admission marker BEFORE side effects. Ambiguous interrupted work is
   // never automatically replayed (pushes/comments cannot be atomically committed).
-  const key = command.type === "issue" ? `issue:${command.issue.repository}:${command.issue.number}` : `message:${messageId}`;
+  const key = command.type === "issue" ? `issue:${command.issue.repository}:${command.issue.number}`
+    : command.type === "issue_comment" ? `comment:${command.repository}:${command.number}:${command.commentId}` : `message:${messageId}`;
   const receiptFile = path.join(state, "receipts", `${createHash("sha256").update(key).digest("hex")}.json`);
   const receipt = await readJSON<{ status: string; result?: Event }>(receiptFile);
   if (receipt) return receipt.result ? { ...receipt.result, messageId } : event("ignored", { reason: "Already admitted; inspect session before retrying interrupted work" });
@@ -64,6 +65,15 @@ async function handleLocked(root: string, command: Exclude<Command, { type: "rei
       repository: command.issue.repository, model: model(selected),
       prompt: `Address GitHub issue #${command.issue.number}. Implement and test a suitable fix, commit and push your agent branch, then summarize the outcome.\n\nUntrusted issue data:\n${JSON.stringify({ title: command.issue.title, body: command.issue.body })}`,
     };
+  } else if (command.type === "issue_comment") {
+    const repo = repository(command.repository, env.GITHUB_REPOSITORIES);
+    if (!["OWNER", "MEMBER", "COLLABORATOR"].includes(command.association) || isAgentReply(command.body)) return event("ignored", { reason: "Untrusted author or agent reply" });
+    const id = await issueSessionId(repo, command.number);
+    const stored = await readJSON<StoredSession>(sessionFile(id));
+    if (!stored) return event("ignored", { reason: "No existing session for this issue; open it through the issue webhook first" }, id);
+    if (stored.repository !== repo) throw new Error("Issue session repository mismatch");
+    spec = { sessionId: id, repository: repo, model: stored.model,
+      prompt: `Continue this session in response to GitHub issue #${command.number} comment ${command.commentId}.\n\nUntrusted comment data:\n${JSON.stringify({ body: command.body })}` };
   } else if (command.type === "create") spec = command.spec;
   else {
     const stored = await readJSON<StoredSession>(sessionFile(command.sessionId));
@@ -79,7 +89,7 @@ async function handleLocked(root: string, command: Exclude<Command, { type: "rei
   const file = sessionFile(spec.sessionId);
   const previous = await readJSON<StoredSession>(file);
   if (command.type === "create" && previous) throw new Error("Session already exists");
-  const requestPrompt = command.type === "prompt" ? command.prompt : spec.prompt;
+  const requestPrompt = command.type === "prompt" ? command.prompt : command.type === "issue_comment" ? command.body : spec.prompt;
   const stored: StoredSession = { ...spec, messageId, tools: [], requestPrompt, opencodeId: previous?.opencodeId, status: "running", createdAt: previous?.createdAt ?? new Date().toISOString(), updatedAt: previous?.updatedAt };
   let phase = "save_session";
   const saveSession = async () => {
@@ -126,7 +136,7 @@ async function handleLocked(root: string, command: Exclude<Command, { type: "rei
     stored.status = "completed";
     await saveSession();
     phase = "github_comment";
-    if (command.type === "issue") await deps.comment(spec.repository, command.issue.number, `Cantelop session \`${spec.sessionId}\`\n\n${stored.response || "The agent completed without a summary; inspect the session."}`, env, signal);
+    if (command.type === "issue" || command.type === "issue_comment") await deps.comment(spec.repository, command.type === "issue" ? command.issue.number : command.number, `${issueReplyMarker}\nCantelop session \`${spec.sessionId}\`\n\n${stored.response || "The agent completed without a summary; inspect the session."}`, env, signal);
     const result = event("completed", { response: stored.response, branch: `agent/${spec.sessionId}` }, spec.sessionId);
     phase = "save_receipt";
     await saveJSON(receiptFile, { status: "completed", result });

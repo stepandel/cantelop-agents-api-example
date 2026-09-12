@@ -2,7 +2,7 @@ import { sessionDatabase, parseSessionQuery, type SessionDatabase } from "./sess
 import { turnStream } from "./turn-stream.js";
 import { ui } from "./ui.js";
 import { defineApi } from "@cantelop/sdk/api";
-import { issueSessionId, model, object, repository, sessionId, text, type Command } from "./contracts.js";
+import { isAgentReply, issueSessionId, model, object, repository, sessionId, text, type Command } from "./contracts.js";
 
 type RequestLog = { reason?: string; repository?: string; issue?: number; deliveryId?: string; githubEvent?: string; action?: string };
 function label(value: unknown): string | undefined {
@@ -53,6 +53,7 @@ export const createApi = (databaseFactory = sessionDatabase) => defineApi<Comman
   async function dispatch(command: Command) {
     const id = command.type === "create" ? command.spec.sessionId
       : command.type === "issue" ? await issueSessionId(command.issue.repository, command.issue.number)
+      : command.type === "issue_comment" ? await issueSessionId(command.repository, command.number)
       : command.type === "rule" || command.type === "reindex" ? `${command.type}-${crypto.randomUUID()}` : command.sessionId;
     const message = await worker(id).dispatch(command);
     console.info(JSON.stringify({ component: "agent-api", event: "session.dispatched", command: command.type, sessionId: id, messageId: message.id }));
@@ -164,14 +165,27 @@ export const createApi = (databaseFactory = sessionDatabase) => defineApi<Comman
     if (!env.GITHUB_WEBHOOK_SECRET) { context.reason = "webhook_not_configured"; return Response.json({ error: "Webhook not configured" }, { status: 503 }); }
     const raw = await bodyBytes(request);
     if (!await verifySignature(raw, request.headers.get("x-hub-signature-256"), env.GITHUB_WEBHOOK_SECRET)) { context.reason = "invalid_signature"; return Response.json({ error: "Invalid signature" }, { status: 401 }); }
-    if (request.headers.get("x-github-event") !== "issues") { context.reason = "unsupported_event"; return Response.json({ ignored: true }); }
+    const githubEvent = request.headers.get("x-github-event");
+    if (githubEvent !== "issues" && githubEvent !== "issue_comment") { context.reason = "unsupported_event"; return Response.json({ ignored: true }); }
     const v = object(JSON.parse(new TextDecoder().decode(raw)));
     context.action = label(v.action);
-    if (v.action !== "opened") { context.reason = "unsupported_action"; return Response.json({ ignored: true }); }
+    if (v.action !== (githubEvent === "issues" ? "opened" : "created")) { context.reason = "unsupported_action"; return Response.json({ ignored: true }); }
     const issue = object(v.issue);
     context.repository = label(object(v.repository).full_name);
     context.issue = Number.isSafeInteger(issue.number) && Number(issue.number) > 0 ? Number(issue.number) : undefined;
     const repo = repository(object(v.repository).full_name, env.GITHUB_REPOSITORIES);
+    if (!Number.isSafeInteger(issue.number) || Number(issue.number) <= 0) throw new TypeError("Invalid issue number");
+    if (githubEvent === "issue_comment") {
+      if (issue.pull_request) { context.reason = "pull_request_comment"; return Response.json({ ignored: true }); }
+      const comment = object(v.comment);
+      const association = text(comment.author_association, "author_association", 30);
+      if (!["OWNER", "MEMBER", "COLLABORATOR"].includes(association)) { context.reason = "untrusted_comment_author"; return Response.json({ ignored: true }); }
+      if (object(comment.user).type !== "User") { context.reason = "bot_comment"; return Response.json({ ignored: true }); }
+      const commentBody = text(comment.body, "body");
+      if (isAgentReply(commentBody)) { context.reason = "agent_reply"; return Response.json({ ignored: true }); }
+      if (!Number.isSafeInteger(comment.id) || Number(comment.id) <= 0) throw new TypeError("Invalid comment ID");
+      return dispatch({ type: "issue_comment", deliveryId: text(request.headers.get("x-github-delivery"), "delivery ID", 100), repository: repo, number: Number(issue.number), commentId: Number(comment.id), body: commentBody, association });
+    }
     const association = text(issue.author_association, "author_association", 30);
     if (!["OWNER", "MEMBER", "COLLABORATOR"].includes(association)) { context.reason = "untrusted_issue_author"; return Response.json({ ignored: true, reason: "untrusted issue author" }); }
     if (!Number.isSafeInteger(issue.number) || Number(issue.number) <= 0) throw new TypeError("Invalid issue number");

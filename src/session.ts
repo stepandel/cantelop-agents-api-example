@@ -65,7 +65,7 @@ export function createBehaviour(run = handle, timeoutMs = 30 * 60 * 1000, root =
           current = { controller: new AbortController(), interruptible: false, steering: false };
           const job = await inbox.take();
           if (!job) break;
-          current.interruptible = job.command.type === "prompt";
+          current.interruptible = job.command.type === "prompt" || job.command.type === "issue_comment";
           if (current.steering && current.interruptible) current.controller.abort({ code: "turn_steered" });
           activity.extend(timeoutMs);
           const turnSignal = AbortSignal.any([activitySignal, current.controller.signal]);
