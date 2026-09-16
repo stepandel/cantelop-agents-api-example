@@ -324,9 +324,7 @@ the issue's existing session, retaining its model and conversation. The comment'
 author determines eligibility, independently of the original issue author.
 Comments on issues without an existing session are ignored. Pull request comments,
 bot comments, edited/deleted comments, and the app's own marked replies are ignored.
-The app also recognizes its older `Cantelop session` replies to prevent loops when
-the GitHub token belongs to a human user. Successful comment turns post a marked
-summary back to the issue. Duplicate comment deliveries never rerun admitted work,
+Successful comment turns post a marked summary back to the issue. Duplicate comment deliveries never rerun admitted work,
 including failed or interrupted turns; post a new comment to request another try.
 
 For existing installations, deploy this update and enable **Issue comments** in
@@ -521,7 +519,7 @@ Distinct session actors run concurrently in separate Git worktrees within the sh
 inbox keeps its own turns ordered. There is no workspace-wide application lock.
 Issue deliveries use a deterministic actor ID per repository/issue; issue-rule
 updates use temporary actors and separate files per repository so independent
-updates do not overwrite each other. Legacy `issue-rules.json` remains a fallback.
+updates do not overwrite each other.
 Backfill reads atomic session snapshots without blocking turns or rewriting them.
 
 - `src/api.ts`: authentication, input validation, webhook verification, dispatch, SSE.

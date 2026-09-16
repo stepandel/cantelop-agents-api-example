@@ -39,7 +39,6 @@ test("signed issue comments route to the issue actor and ignore bots, replies an
     { ...payload, comment: { ...payload.comment, author_association: "NONE" } },
     { ...payload, comment: { ...payload.comment, user: { type: "Bot" } } },
     { ...payload, comment: { ...payload.comment, body: `${issueReplyMarker}\nDone` } },
-    { ...payload, comment: { ...payload.comment, body: "Cantelop session `issue-test`\n\nDone" } },
   ]) {
     const ignored = await send(value);
     assert.equal(ignored.status, 200);

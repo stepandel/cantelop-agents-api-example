@@ -12,7 +12,7 @@ export type Command =
   | { type: "issue_comment"; deliveryId: string; repository: string; number: number; commentId: number; body: string; association: string };
 export const issueReplyMarker = "<!-- cantelop-agent-reply -->";
 export function isAgentReply(body: string): boolean {
-  return body.includes(issueReplyMarker) || /^Cantelop session `[^`]+`/.test(body.trimStart());
+  return body.includes(issueReplyMarker);
 }
 export type Progress = { type: "queued" | "started" | "status" | "text.delta" | "text.replace" | "tool.status"; data: unknown };
 export interface Event {

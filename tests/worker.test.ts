@@ -272,19 +272,15 @@ test("different sessions run concurrently in one workspace even with a legacy lo
   assert.deepEqual(results.map(result => result.type), ["completed", "completed"]);
 });
 
-test("concurrent repository rule updates preserve both rules and legacy fallback", async t => {
+test("concurrent repository rule updates preserve both rules", async t => {
   const h = await harness(t);
-  const { readJSON, saveJSON } = await import("../src/runtime.js");
+  const { readJSON } = await import("../src/runtime.js");
   const ruleEnv = { ...env, GITHUB_REPOSITORIES: "owner/repo,owner/other" };
-  await saveJSON(path.join(h.root, ".agent-api", "issue-rules.json"), { "owner/repo": model });
-  const issue: Command = { type: "issue", deliveryId: "legacy", issue: { repository: "owner/repo", number: 99, title: "Fix", body: "Fix", association: "OWNER" } };
-  assert.equal((await h.run(issue, "legacy")).type, "completed");
-  assert.equal(h.runs[0]?.model, model);
   await Promise.all(["owner/repo", "owner/other"].map(repository =>
     handle(h.root, { type: "rule", repository, model: "openai/gpt-4.1" }, repository, ruleEnv, new AbortController().signal, h.deps)));
   for (const repo of ["owner/repo", "owner/other"]) {
     assert.equal(await readJSON(path.join(h.root, ".agent-api", "issue-rules", `${repo}.json`)), "openai/gpt-4.1");
   }
-  await h.run({ ...issue, issue: { ...issue.issue, number: 100 } }, "new-rule");
-  assert.equal(h.runs[1]?.model, "openai/gpt-4.1");
+  await h.run({ type: "issue", deliveryId: "new-rule", issue: { repository: "owner/repo", number: 100, title: "Fix", body: "Fix", association: "OWNER" } }, "new-rule");
+  assert.equal(h.runs[0]?.model, "openai/gpt-4.1");
 });

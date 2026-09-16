@@ -33,7 +33,6 @@ export async function handle(root: string, command: Command, messageId: string, 
   signal.throwIfAborted();
   const state = path.join(root, ".agent-api");
   const sessionFile = (id: string) => path.join(state, "sessions", `${sessionId(id)}.json`);
-  const rulesFile = path.join(state, "issue-rules.json");
   const ruleFile = (repo: string) => path.join(state, "issue-rules", `${repo}.json`);
   const event = (type: Event["type"], data?: unknown, id?: string): Event => ({ type, messageId, sessionId: id, data });
   if (command.type === "inspect") return event("session", await readJSON(sessionFile(command.sessionId)) ?? null, command.sessionId);
@@ -52,7 +51,7 @@ export async function handle(root: string, command: Command, messageId: string, 
   let spec: SessionSpec;
   if (command.type === "issue") {
     if (!["OWNER", "MEMBER", "COLLABORATOR"].includes(command.issue.association)) return event("ignored", { reason: "Untrusted author" });
-    const selected = await readJSON<Model>(ruleFile(repository(command.issue.repository, env.GITHUB_REPOSITORIES))) ?? (await readJSON<Record<string, Model>>(rulesFile))?.[command.issue.repository] ?? env.GITHUB_ISSUE_MODEL;
+    const selected = await readJSON<Model>(ruleFile(repository(command.issue.repository, env.GITHUB_REPOSITORIES))) ?? env.GITHUB_ISSUE_MODEL;
     if (!selected) return event("ignored", { reason: "Set GITHUB_ISSUE_MODEL or configure a repository issue rule first" });
     spec = {
       sessionId: await issueSessionId(command.issue.repository, command.issue.number),
