@@ -70,7 +70,7 @@ export function createBehaviour(run = handle, timeoutMs = 30 * 60 * 1000, root =
           activity.extend(timeoutMs);
           const turnSignal = AbortSignal.any([activitySignal, current.controller.signal]);
           console.info(JSON.stringify({ component: "agent-api", event: "session.started", messageId: job.messageId, sessionId: session.id, command: job.command.type }));
-          await index({ messageId: job.messageId, state: "running", progress: { type: "status", messageId: job.messageId, data: { phase: "waiting_for_workspace" } } });
+          await index({ messageId: job.messageId, state: "running", progress: { type: "status", messageId: job.messageId, data: { phase: "started" } } });
           let event: Event;
           try {
             await turnOutput.send({ type: "started", messageId: job.messageId, sessionId: session.id, data: {} });

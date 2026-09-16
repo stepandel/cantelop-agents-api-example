@@ -234,13 +234,13 @@ test("cancel command aborts the active turn and preserves queued messages", asyn
   assert.deepEqual(idle.data, { cancelled: false, pendingPreserved: true });
 });
 
-test("indexes workspace waiting and final result independently of event subscribers", async t => {
+test("indexes turn start and final result independently of event subscribers", async t => {
   const indexed: StoredTurn[] = [];
   let release!: () => void;
   const blocked = new Promise<void>(resolve => { release = resolve; });
   const database = { async saveTurn(turn: StoredTurn) { indexed.push(structuredClone(turn)); } } as SessionDatabase;
   const h = await harness(t, async (_root, _command, messageId) => {
-    assert.equal((indexed.at(-1)?.progress?.data as any).phase, "waiting_for_workspace");
+    assert.equal((indexed.at(-1)?.progress?.data as any).phase, "started");
     await blocked;
     return { type: "completed", messageId, data: { response: "Done" } };
   }, undefined, database);

@@ -76,7 +76,7 @@ test("expired replay polls only the requested turn through waiting to completion
     calls.push(url); n++;
     if (n === 1) return { status: 409, json: async () => ({ error: { code: 'event_cursor_expired' } }) };
     if (n === 2) return { status: 404 }; // not yet admitted/indexed
-    if (n === 3) return { ok: true, json: async () => ({ turn: { progress: { type: 'status', messageId: 'second', data: { phase: 'waiting_for_workspace' } } } }) };
+    if (n === 3) return { ok: true, json: async () => ({ turn: { progress: { type: 'status', messageId: 'second', data: { phase: 'started' } } } }) };
     return { ok: true, json: async () => ({ turn: { result: { type: 'completed', messageId: 'second', data: { response: 'Second result' } } } }) };
   });
   assert.equal(await h.streamRequest('/turns/events?sessionId=one&messageId=second', (e: any) => events.push(e), assert.fail), true);

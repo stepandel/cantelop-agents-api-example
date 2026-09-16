@@ -126,6 +126,7 @@ test("backfill migrates legacy timestamps and repairs an index after an outage",
   const file = path.join(h.root, ".agent-api", "sessions", "old.json");
   await saveJSON(file, snapshot("old", { createdAt: undefined, updatedAt: undefined, status: "completed" }));
   assert.equal(await backfillSessions(h.root, h.db, new AbortController().signal), 1);
+  assert.equal((await readJSON<StoredSession>(file))?.updatedAt, undefined, "backfill must not rewrite live snapshots");
   const first = await h.db.get("old");
   assert.ok(first?.createdAt);
   await backfillSessions(h.root, h.db, new AbortController().signal);
@@ -158,11 +159,11 @@ test("per-turn recovery keeps waiting follow-ups separate from completed predece
   await h.db.save(snapshot('one', { messageId: first, status: 'completed', response: 'Previous result' }));
   const url = '/turns/inspect?sessionId=one&messageId=' + second;
   assert.equal((await h.request(url)).status, 404);
-  await h.db.saveTurn({ sessionId: 'one', messageId: second, state: 'running', progress: { type: 'status', messageId: second, data: { phase: 'waiting_for_workspace' } } });
+  await h.db.saveTurn({ sessionId: 'one', messageId: second, state: 'running', progress: { type: 'status', messageId: second, data: { phase: 'started' } } });
   await h.db.saveTurn({ sessionId: 'one', messageId: second, state: 'queued' });
   let result = await (await h.request(url)).json() as any;
   assert.equal(result.turn.state, 'running');
-  assert.equal(result.turn.progress.data.phase, 'waiting_for_workspace');
+  assert.equal(result.turn.progress.data.phase, 'started');
   assert.equal(result.turn.result, undefined);
   await h.db.saveTurn({ sessionId: 'one', messageId: second, state: 'finished', result: { type: 'completed', messageId: second, data: { response: 'Follow-up result' } } });
   await h.db.saveTurn({ sessionId: 'one', messageId: second, state: 'running' });

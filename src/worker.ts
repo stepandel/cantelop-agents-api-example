@@ -1,6 +1,5 @@
 import { backfillSessions } from "./session-db-migration.js";
 import path from "node:path";
-import { withWorkspaceLock } from "./lock.js";
 import { createHash } from "node:crypto";
 import { agentEnvironment, agentFailureMessage, checkout, commandFailureMessage, CommandError, readJSON, runAgent, saveJSON, type Env, AgentError } from "./runtime.js";
 import { isAgentReply, issueReplyMarker, issueSessionId, model, repository, sessionId, type Command, type Event, type Model, type SessionSpec, type Progress } from "./contracts.js";
@@ -31,21 +30,16 @@ export async function handle(root: string, command: Command, messageId: string, 
     const count = await backfillSessions(root, database, signal);
     return { type: "configured", messageId, data: { indexedSessions: count } };
   }
-  if (command.type === "inspect") return handleLocked(root, command, messageId, env, signal, deps, emit);
-  await emit({ type: "status", messageId, data: { phase: "waiting_for_workspace" } });
-  return withWorkspaceLock(root, signal, () => handleLocked(root, command, messageId, env, signal, deps, emit));
-}
-async function handleLocked(root: string, command: Exclude<Command, { type: "reindex" | "cancel" }>, messageId: string, env: Env, signal: AbortSignal, deps: Dependencies, emit: (event: Event) => Promise<void>): Promise<Event> {
+  signal.throwIfAborted();
   const state = path.join(root, ".agent-api");
   const sessionFile = (id: string) => path.join(state, "sessions", `${sessionId(id)}.json`);
   const rulesFile = path.join(state, "issue-rules.json");
+  const ruleFile = (repo: string) => path.join(state, "issue-rules", `${repo}.json`);
   const event = (type: Event["type"], data?: unknown, id?: string): Event => ({ type, messageId, sessionId: id, data });
   if (command.type === "inspect") return event("session", await readJSON(sessionFile(command.sessionId)) ?? null, command.sessionId);
   if (command.type === "rule") {
     repository(command.repository, env.GITHUB_REPOSITORIES);
-    const rules = await readJSON<Record<string, Model>>(rulesFile) ?? {};
-    rules[command.repository] = model(command.model);
-    await saveJSON(rulesFile, rules);
+    await saveJSON(ruleFile(command.repository), model(command.model));
     return event("configured", { repository: command.repository, model: command.model });
   }
   // Persist an admission marker BEFORE side effects. Ambiguous interrupted work is
@@ -58,7 +52,7 @@ async function handleLocked(root: string, command: Exclude<Command, { type: "rei
   let spec: SessionSpec;
   if (command.type === "issue") {
     if (!["OWNER", "MEMBER", "COLLABORATOR"].includes(command.issue.association)) return event("ignored", { reason: "Untrusted author" });
-    const selected = (await readJSON<Record<string, Model>>(rulesFile))?.[command.issue.repository] ?? env.GITHUB_ISSUE_MODEL;
+    const selected = await readJSON<Model>(ruleFile(repository(command.issue.repository, env.GITHUB_REPOSITORIES))) ?? (await readJSON<Record<string, Model>>(rulesFile))?.[command.issue.repository] ?? env.GITHUB_ISSUE_MODEL;
     if (!selected) return event("ignored", { reason: "Set GITHUB_ISSUE_MODEL or configure a repository issue rule first" });
     spec = {
       sessionId: await issueSessionId(command.issue.repository, command.issue.number),

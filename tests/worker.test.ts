@@ -113,23 +113,45 @@ test("API and webhook secrets are absent from agent subprocess environment", () 
   assert.deepEqual(JSON.parse(actual.OPENCODE_CONFIG_CONTENT!).permission, { "*": "allow", question: "deny" });
   assert.equal(actual.OPENCODE_CONFIG_CONTENT?.includes("model"), false);
 });
-test("shared checkout refuses switching branches when changes remain", async t => {
+test("concurrent sessions get separate worktrees and follow-ups preserve edits", async t => {
   const h = await harness(t);
-  const { mkdir, writeFile } = await import("node:fs/promises");
+  const { mkdir, writeFile, readFile } = await import("node:fs/promises");
   const directory = path.join(h.root, "repositories", "owner", "repo");
   await mkdir(directory, { recursive: true });
   const gitEnv = agentEnvironment(h.root, env);
   const signal = new AbortController().signal;
-  await git(directory, ["init", "-b", "agent/one"], gitEnv, signal);
-  await writeFile(path.join(directory, "work.txt"), "unfinished");
-  assert.equal(await checkout(h.root, "owner/repo", "one", gitEnv, signal), directory);
-  await assert.rejects(checkout(h.root, "owner/repo", "two", gitEnv, signal), /uncommitted changes/);
+  await git(directory, ["init", "-b", "main"], gitEnv, signal);
+  await writeFile(path.join(directory, "work.txt"), "base");
+  await git(directory, ["add", "."], gitEnv, signal);
+  await git(directory, ["commit", "-m", "initial"], gitEnv, signal);
+  await git(directory, ["update-ref", "refs/remotes/origin/main", "HEAD"], gitEnv, signal);
+  await git(directory, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"], gitEnv, signal);
+  await writeFile(path.join(directory, "work.txt"), "base edits");
+  const [one, two] = await Promise.all(["one", "two"].map(id => checkout(h.root, "owner/repo", id, gitEnv, signal)));
+  assert.ok(one);
+  assert.ok(two);
+  assert.notEqual(one, two);
+  assert.equal(await git(one, ["branch", "--show-current"], gitEnv, signal), "agent/one");
+  assert.equal(await git(two, ["branch", "--show-current"], gitEnv, signal), "agent/two");
+  await writeFile(path.join(one, "work.txt"), "one edits");
+  assert.equal(await readFile(path.join(two, "work.txt"), "utf8"), "base");
+  assert.equal(await checkout(h.root, "owner/repo", "one", gitEnv, signal), one);
+  assert.equal(await readFile(path.join(one, "work.txt"), "utf8"), "one edits");
+  assert.equal(await git(directory, ["branch", "--show-current"], gitEnv, signal), "main");
+  assert.equal(await readFile(path.join(directory, "work.txt"), "utf8"), "base edits");
+  await git(one, ["add", "."], gitEnv, signal);
+  await git(one, ["commit", "-m", "session one"], gitEnv, signal);
+  assert.equal(await git(two, ["log", "-1", "--format=%s"], gitEnv, signal), "initial");
+  // Existing session branches can be reattached after a worktree was removed.
+  await git(directory, ["worktree", "remove", one], gitEnv, signal);
+  assert.equal(await checkout(h.root, "owner/repo", "one", gitEnv, signal), one);
+  assert.equal(await readFile(path.join(one, "work.txt"), "utf8"), "one edits");
 });
 test("OpenRouter key is required even when another provider key exists", () => {
   assert.throws(() => agentEnvironment("/workspace", { GITHUB_TOKEN: "test", OPENAI_API_KEY: "unused" }), /OpenRouter credentials/);
 });
 
-test("inspection remains available during work; cancellation persists failure and releases the lock", async t => {
+test("inspection remains available during work; cancellation persists failure", async t => {
   const h = await harness(t);
   const controller = new AbortController();
   let started!: () => void;
@@ -230,4 +252,39 @@ test("runtime status and tool activity are inspectable before the turn finishes"
     return "Done";
   };
   await h.run({ type: "create", spec: { sessionId: "live", model, repository: "owner/repo", prompt: "Start" } }, "m1");
+});
+
+test("different sessions run concurrently in one workspace even with a legacy lock", { timeout: 5000 }, async t => {
+  const h = await harness(t);
+  const { mkdir } = await import("node:fs/promises");
+  await mkdir(path.join(h.root, ".agent-api", "workspace.lock"), { recursive: true });
+  let release!: () => void;
+  const bothRunning = new Promise<void>(resolve => { release = resolve; });
+  let active = 0;
+  h.deps.runAgent = async () => {
+    if (++active === 2) release();
+    await bothRunning;
+    return "Done";
+  };
+  const results = await Promise.all(["one", "two"].map(sessionId =>
+    handle(h.root, { type: "create", spec: { sessionId, repository: "owner/repo", model, prompt: "Start" } },
+      sessionId, env, AbortSignal.timeout(2000), h.deps)));
+  assert.deepEqual(results.map(result => result.type), ["completed", "completed"]);
+});
+
+test("concurrent repository rule updates preserve both rules and legacy fallback", async t => {
+  const h = await harness(t);
+  const { readJSON, saveJSON } = await import("../src/runtime.js");
+  const ruleEnv = { ...env, GITHUB_REPOSITORIES: "owner/repo,owner/other" };
+  await saveJSON(path.join(h.root, ".agent-api", "issue-rules.json"), { "owner/repo": model });
+  const issue: Command = { type: "issue", deliveryId: "legacy", issue: { repository: "owner/repo", number: 99, title: "Fix", body: "Fix", association: "OWNER" } };
+  assert.equal((await h.run(issue, "legacy")).type, "completed");
+  assert.equal(h.runs[0]?.model, model);
+  await Promise.all(["owner/repo", "owner/other"].map(repository =>
+    handle(h.root, { type: "rule", repository, model: "openai/gpt-4.1" }, repository, ruleEnv, new AbortController().signal, h.deps)));
+  for (const repo of ["owner/repo", "owner/other"]) {
+    assert.equal(await readJSON(path.join(h.root, ".agent-api", "issue-rules", `${repo}.json`)), "openai/gpt-4.1");
+  }
+  await h.run({ ...issue, issue: { ...issue.issue, number: 100 } }, "new-rule");
+  assert.equal(h.runs[1]?.model, "openai/gpt-4.1");
 });

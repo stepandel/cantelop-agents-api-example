@@ -109,8 +109,8 @@ task will verify GitHub access and model credentials.
    and continue with new instructions. **Stop** cancels the active turn.
 
 When you are ready to have the agent make changes, ask it to implement a specific
-change, run the relevant tests, and commit and push its agent branch. Each session
-uses an `agent/SESSION_ID` branch. Review the resulting changes in GitHub; the
+change, run the relevant tests, and commit and push the requested changes. Each session gets its own Git worktree and `agent/SESSION_ID` branch
+within the shared Cantelop Workspace. Follow-ups reuse that worktree. Review the resulting changes in GitHub; the
 example does not automatically create pull requests or merge changes. A completed
 turn alone does not prove a push succeeded—check the agent's response and the branch.
 
@@ -247,8 +247,8 @@ saved and resume when another work message is dispatched.
 
 Inspection emits `session` with the stored model, OpenCode conversation ID,
 prompt, status, latest response, and a `messages` array of queued/running/finished
-requests. Unknown sessions return only that array. Inspection does not wait for
-the workspace lock and works without a database.
+requests. Unknown sessions return only that array. Inspection remains available
+during agent work and works without a database.
 
 ### Handle streaming events
 
@@ -260,7 +260,7 @@ Platform sandbox IDs and transport envelopes are omitted on the turn endpoint.
 | --- | --- |
 | `queued` | Keep waiting; the message is durably queued (`data.mode`). |
 | `started` | Mark the turn active. |
-| `status` | Show `data.phase`: workspace/checkout/startup, model validation, waiting for the model, or OpenCode busy/reasoning/retry/idle/error status. Retry events include a safe attempt count and next retry timestamp; errors include an allowlisted class and optional HTTP status. |
+| `status` | Show `data.phase`: checkout/startup, model validation, waiting for the model, or OpenCode busy/reasoning/retry/idle/error status. Retry events include a safe attempt count and next retry timestamp; errors include an allowlisted class and optional HTTP status. |
 | `text.delta` | Append `data.text` to the text block identified by `data.partId`. |
 | `text.replace` | Replace that block with `data.text` if OpenCode revises a snapshot. |
 | `tool.status` | Show the tool name and pending/running/completed/error state. |
@@ -334,8 +334,8 @@ the webhook settings. Old comments are not fetched automatically; post a new
 comment or redeliver its original webhook after enabling support. Follow-ups also
 remain available through the web console and `POST /sessions/messages`.
 
-The worker asks OpenCode to implement, test, commit and push a fix on its agent
-branch, then posts a summary comment on the issue. Updating the default or a rule affects future
+The worker asks OpenCode to implement, test, commit and push a fix in its session
+worktree, then posts a summary comment on the issue. Updating the default or a rule affects future
 issue sessions; existing sessions retain their original model. Creating a qualifying issue after enabling this webhook can trigger commits, pushes,
 and an issue comment.
 
@@ -405,8 +405,7 @@ The existing `POST /sessions/inspect` still reads the durable workspace snapshot
 
 Workspace JSON snapshots remain the recovery source. The worker writes JSON
 first and then updates SQL at turn start, OpenCode conversation creation, completion
-and failure. A session first becomes queryable after it acquires the workspace
-lock and saves its running state; HTTP `202` does not imply it is already indexed.
+and failure. A session first becomes queryable after it saves its running state; HTTP `202` does not imply it is already indexed.
 Follow-ups update the same row and preserve the creation time. Streaming deltas
 and per-turn history are not stored in the query index.
 
@@ -418,11 +417,11 @@ configuration and this project's dependencies installed:
 npm run db:setup -- /workspace
 ```
 
-Backfill acquires the existing workspace lock, reads `.agent-api/sessions/*.json`,
+Backfill reads `.agent-api/sessions/*.json`,
 and upserts them without running agents or reposting issue comments. It can be
 safely rerun; older snapshots cannot overwrite newer indexed updates. Legacy
 snapshots without timestamps use file modification time as an approximation and
-save it for subsequent runs.
+use that stable value on subsequent runs. Backfill never rewrites live snapshots.
 
 JSON and SQL are not one transaction. If SQL fails, the turn fails and the local
 snapshot remains inspectable; an index write failure before checkout prevents
@@ -441,7 +440,7 @@ curl -X POST "$BASE_URL/sessions/reindex" \
 
 Subscribe to the returned `stream` URL. A `configured` terminal event reports
 `data.indexedSessions`; `failed` indicates the index could not be repaired.
-This operation takes the workspace lock and only imports snapshots; it never
+This operation only imports snapshots; it never
 calls the agent or GitHub. Initialize the database schema before dispatching it.
 
 ## Troubleshooting
@@ -452,9 +451,8 @@ calls the agent or GitHub. Initialize the database schema before dispatching it.
 | `Repository is not enabled` | Match `OWNER/REPO` against `GITHUB_REPOSITORIES`; upload changed settings for production. |
 | Clone or push fails | Confirm the repository exists, the GitHub token includes it, and Contents permissions and branch protection permit the operation. |
 | Model, authentication, credit, or rate-limit failure | Read the safe diagnostic in the stream or Inspect. Check `OPENROUTER_API_KEY`, account credit, and the exact model ID. Start a new session if its model was wrong. |
-| A turn stays at “waiting for workspace” | Turns share one workspace and run serially. Check the active session; see recovery guidance below for a crashed worker's lock. |
 | `GET /sessions` returns `503` | Configure the optional database, run `npm run db:setup`, and verify connectivity from both API and workers. POST/SSE flows work without the database. |
-| A newly created session is missing from the index | Wait for it to acquire the workspace lock and save its running state. `202` does not mean it has been indexed yet. |
+| A newly created session is missing from the index | Wait for it to save its running state. `202` does not mean it has been indexed yet. |
 | The stream disconnects without a final event | Reconnect with the last event ID or inspect the session. EOF alone does not mean success. |
 
 The trace UI receives structured JSON console logs with `component: agent-api`.
@@ -478,27 +476,21 @@ messages. Live text and tool progress remain in session events rather than logs.
 - A provider/tool/comment failure emits `failed`, persists the session, and does
   not automatically replay. A follow-up API message can continue the conversation.
   A crash may leave the persisted status `running`; inspect before continuing.
-- Lock acquisition waits until the current owner finishes or the waiting request
-  is cancelled/times out. A crashed worker leaves `workspace.lock` behind; the lock
-  is never expired automatically. Confirm the owning worker and all its tools have
-  stopped before removing that directory. `owner.json` records the PID and time;
-  a PID alone is not proof of liveness across containers.
-- Uncommitted changes block another session from switching branches. Continue the
-  owning session to commit or resolve them. No automatic reset or stash occurs.
+- Sessions run concurrently in separate Git worktrees, with separate working files
+  and indexes. They share repository objects and refs; agents must preserve other
+  sessions' branches and worktrees. Worktrees persist for follow-ups.
 - A completed result is persisted before posting an issue comment. A failed
   comment marks the command failed; the stored response remains available.
-- Turns run as Cantelop activities with a 30-minute deadline (including time
-  waiting for the shared workspace lock). Message admission returns promptly;
+- Turns run as Cantelop activities with a 30-minute deadline. Message admission returns promptly;
   a successful platform message receipt does not mean the coding turn completed.
   Read the application's `completed` / `failed` events or inspect saved state.
 - Follow-ups queue by default, with up to 100 pending messages per session.
   A full queue emits `failed` with `data.code: "queue_full"`. HTTP 202 means
   dispatch succeeded; a `queued` event confirms durable queue admission.
-  Inspection remains available while the workspace is locked.
+  Inspection remains available during agent work.
 - Pending messages survive restarts. The next work request resumes draining them.
   A previously running message is marked `turn_interrupted` in inspection and
-  is never automatically replayed. Crash recovery does not remove stale workspace
-  locks. Activity cancellation leaves pending messages saved for the next work request.
+  is never automatically replayed. Activity cancellation leaves pending messages saved for the next work request.
   Inbox history has no automatic retention cleanup.
 - Failed turns persist safe diagnostics: phase, process exit code/signal and
   recognized stderr categories, plus recognized provider error categories and HTTP
@@ -525,20 +517,21 @@ Each API-created session gets a **distinct Cantelop Session actor**, using the A
 session UUID as its actor ID. Follow-ups and event streams address that same ID.
 Each actor owns a separate persisted OpenCode conversation.
 
-An atomic filesystem lock at `.agent-api/workspace.lock` serializes complete turns
-across actors sharing the workspace. It covers Git checkout, agent tools, receipts,
-and state updates, preventing one session from switching another's active branch.
+Distinct session actors run concurrently in separate Git worktrees within the shared workspace. Each actor's
+inbox keeps its own turns ordered. There is no workspace-wide application lock.
 Issue deliveries use a deterministic actor ID per repository/issue; issue-rule
-updates use temporary actors and take the same workspace lock.
+updates use temporary actors and separate files per repository so independent
+updates do not overwrite each other. Legacy `issue-rules.json` remains a fallback.
+Backfill reads atomic session snapshots without blocking turns or rewriting them.
 
 - `src/api.ts`: authentication, input validation, webhook verification, dispatch, SSE.
 - `src/ui.ts`: the single-page operator console served at `GET /`.
 - `src/session.ts`: per-session Cantelop worker entry point and turn scheduling.
 - `src/inbox.ts`: atomic durable message queue and turn outcomes.
-- `src/lock.ts`: cross-process workspace lock with cancellable waiting.
 - `src/worker.ts`: durable session models, issue rules, receipts and outcomes.
-- `src/runtime.ts`: authenticated Git, shared checkouts, OpenCode lifecycle.
-- `repositories/OWNER/REPO`: one shared clone per repository; `agent/SESSION_ID` branches.
+- `src/runtime.ts`: authenticated Git, per-session worktrees, OpenCode lifecycle.
+- `repositories/OWNER/REPO`: one shared clone per repository.
+- `worktrees/OWNER/REPO/SESSION_ID`: persistent session worktree on `agent/SESSION_ID`.
 - `.agent-api/`: conversation mappings, results, webhook receipts and OpenCode data.
 
 OpenCode is started on loopback for each turn and stopped before the next turn.
@@ -568,8 +561,13 @@ The project pins `@cantelop/sdk@0.8.1` and `@opencode-ai/sdk@1.18.30`.
 
 ### Coordinator actors
 
-The original `agent-coordinator` actor must be idle before deploying this version:
-its old code does not acquire the workspace lock. New requests do not use it.
+The original `agent-coordinator` actor must be idle before deploying this version
+to avoid overlapping ownership of the same session. New requests do not use it.
+Legacy `.agent-api/workspace.lock` directories are ignored by this version.
+If a legacy session branch is still checked out in the shared clone, finish its
+work and switch that clone to another branch before continuing the session. Git
+will otherwise refuse to attach that branch to its new worktree. Existing edits
+are never reset, stashed or moved automatically.
 Existing stored conversation IDs/models remain usable through their new per-ID
 actors in the same workspace. Event subscriptions must now include `sessionId`;
 there is no global event stream. Issue-rule updates return their own session ID
@@ -594,9 +592,8 @@ expiry cannot be reconstructed; the final response is restored when available.
 
 The optional session database now includes `agent_turns`. Run `npm run db:setup`
 before deploying this update to an existing installation. Each turn is indexed
-at admission, before waiting for the shared workspace, on status changes, and on
-completion. A follow-up waiting behind another session is shown as waiting for
-the shared workspace. Recovery requires the session database; without it, live
+at admission, at turn start, on status changes, and on completion. Follow-ups
+queue behind earlier turns in the same session; other sessions run concurrently. Recovery requires the session database; without it, live
 streams still work but expired replay cannot be recovered through this endpoint.
 Older workers can recover their latest result from the existing session snapshot
-once it matches the requested message; their pre-lock waiting state is not indexed.
+once it matches the requested message; their earlier waiting state is not indexed.
