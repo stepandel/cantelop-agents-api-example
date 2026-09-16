@@ -1,4 +1,4 @@
-import { open, readdir } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { sessionId } from "./contracts.js";
 import type { SessionDatabase, StoredSession } from "./session-db.js";
@@ -14,18 +14,9 @@ export async function backfillSessions(root: string, database: SessionDatabase, 
   for (const name of files.filter(name => name.endsWith(".json")).sort()) {
     signal.throwIfAborted();
     const file = path.join(directory, name);
-    // Read metadata and contents from the same inode even if a turn replaces it.
-    const snapshot = await open(file, "r");
-    let stored: StoredSession;
-    let timestamp: string;
-    try {
-      timestamp = (await snapshot.stat()).mtime.toISOString();
-      stored = JSON.parse(await snapshot.readFile("utf8")) as StoredSession;
-    } finally { await snapshot.close(); }
+    const stored = JSON.parse(await readFile(file, "utf8")) as StoredSession;
     if (!stored || `${sessionId(stored.sessionId)}.json` !== name) throw new Error("Invalid session snapshot");
-    // Do not rewrite snapshots: a live turn may have saved a newer version.
-    stored.createdAt ??= timestamp;
-    stored.updatedAt ??= timestamp;
+    // Import without rewriting snapshots that live turns may be updating.
     await database.save(stored);
     count++;
   }

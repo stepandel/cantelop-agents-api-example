@@ -417,9 +417,8 @@ npm run db:setup -- /workspace
 
 Backfill reads `.agent-api/sessions/*.json`,
 and upserts them without running agents or reposting issue comments. It can be
-safely rerun; older snapshots cannot overwrite newer indexed updates. Legacy
-snapshots without timestamps use file modification time as an approximation and
-use that stable value on subsequent runs. Backfill never rewrites live snapshots.
+safely rerun; older snapshots cannot overwrite newer indexed updates. Snapshots
+must include creation and update timestamps. Backfill never rewrites live snapshots.
 
 JSON and SQL are not one transaction. If SQL fails, the turn fails and the local
 snapshot remains inspectable; an index write failure before checkout prevents

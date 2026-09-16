@@ -121,12 +121,12 @@ test("GitHub issue sessions are queryable and duplicate deliveries do not rerun"
   assert.equal(runs, 1);
 });
 
-test("backfill migrates legacy timestamps and repairs an index after an outage", async t => {
+test("backfill repairs an index without rewriting snapshots", async t => {
   const h = await harness(t);
   const file = path.join(h.root, ".agent-api", "sessions", "old.json");
-  await saveJSON(file, snapshot("old", { createdAt: undefined, updatedAt: undefined, status: "completed" }));
+  await saveJSON(file, snapshot("old", { status: "completed" }));
   assert.equal(await backfillSessions(h.root, h.db, new AbortController().signal), 1);
-  assert.equal((await readJSON<StoredSession>(file))?.updatedAt, undefined, "backfill must not rewrite live snapshots");
+  assert.deepEqual(await readJSON<StoredSession>(file), snapshot("old", { status: "completed" }), "backfill must not rewrite live snapshots");
   const first = await h.db.get("old");
   assert.ok(first?.createdAt);
   await backfillSessions(h.root, h.db, new AbortController().signal);
@@ -134,6 +134,13 @@ test("backfill migrates legacy timestamps and repairs an index after an outage",
   await saveJSON(file, { ...first, updatedAt: "2099-01-01T00:00:00.000Z", status: "failed" });
   await backfillSessions(h.root, h.db, new AbortController().signal);
   assert.equal((await h.db.get("old"))?.status, "failed");
+});
+
+test("backfill rejects snapshots without timestamps instead of inventing them", async t => {
+  const h = await harness(t);
+  await saveJSON(path.join(h.root, ".agent-api", "sessions", "one.json"), snapshot("one", { createdAt: undefined }));
+  await assert.rejects(backfillSessions(h.root, h.db, new AbortController().signal), /timestamps are required/);
+  assert.equal(await h.db.get("one"), null);
 });
 
 test("an unavailable database prevents agent side effects and preserves inspectable failure", async t => {
