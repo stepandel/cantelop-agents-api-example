@@ -4,7 +4,7 @@ import { runInNewContext } from "node:vm";
 import { ui } from "../src/ui.js";
 
 function harness() {
-  const source = ui.slice(ui.indexOf('  function applySnapshot('), ui.indexOf('  // Older snapshots'));
+  const source = ui.slice(ui.indexOf('  function applySnapshot('), ui.indexOf('  function openDrawer('));
   return runInNewContext(`
     var active = {}, current = 'issue-1';
     function save() {} function show() {} function renderSidebar() {}
@@ -26,13 +26,17 @@ test("opening a webhook snapshot discovers its stream and restores completed too
   h.applySnapshot(session, { ...snapshot, messageId: "msg_" + "b".repeat(32) });
   assert.equal(session.turns.length, 2);
 });
-test("legacy cached summaries upgrade without duplicating the turn", () => {
+test("repeated snapshots update only the matching turn without duplication", () => {
   const h = harness();
-  const session: any = { id: "issue-1", turns: [{ messageId: "stored", status: "completed", tools: [] }] };
-  const tools = [{ partId: "p1", tool: "read", status: "completed" }];
-  h.applySnapshot(session, { messageId: "msg_" + "a".repeat(32), prompt: "Issue", status: "completed", tools });
-  assert.equal(session.turns.length, 1);
-  assert.deepEqual(session.turns[0].tools, tools);
+  const session: any = { id: "issue-1", turns: [] };
+  const first = { messageId: "first", prompt: "First", status: "completed", response: "First result" };
+  const second = { messageId: "second", prompt: "Second", status: "running" };
+  h.applySnapshot(session, first);
+  h.applySnapshot(session, second);
+  h.applySnapshot(session, { ...second, status: "completed", response: "Second result" });
+  assert.equal(session.turns.length, 2);
+  assert.equal(session.turns[0].response, "First result");
+  assert.equal(session.turns[1].response, "Second result");
 });
 
 test("running snapshots restore diagnostic phase and tools without replay", () => {

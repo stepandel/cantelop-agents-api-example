@@ -592,5 +592,4 @@ before deploying this update to an existing installation. Each turn is indexed
 at admission, at turn start, on status changes, and on completion. Follow-ups
 queue behind earlier turns in the same session; other sessions run concurrently. Recovery requires the session database; without it, live
 streams still work but expired replay cannot be recovered through this endpoint.
-Older workers can recover their latest result from the existing session snapshot
-once it matches the requested message; their earlier waiting state is not indexed.
+Turn recovery reads the per-turn index; session snapshots do not substitute for missing turn records.

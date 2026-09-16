@@ -120,18 +120,7 @@ export const createApi = (databaseFactory = sessionDatabase) => defineApi<Comman
     const id = sessionId(params.get("sessionId"));
     const messageId = text(params.get("messageId"), "messageId", 100);
     if (!/^msg_[a-f0-9]{32}$/.test(messageId)) throw new TypeError("Invalid messageId");
-    const turn = await readDatabase(async db => {
-      const stored = await db.getTurn(id, messageId);
-      if (stored?.state === "finished") return stored;
-      // Compatible with workers started before per-turn indexing was deployed.
-      const session = await db.get(id);
-      if (session?.messageId !== messageId) return stored;
-      if (stored && session.status === "running") return stored;
-      return { sessionId: id, messageId, state: session.status === "running" ? "running" : "finished",
-        progress: { type: "status", messageId, data: session.runtimeStatus ?? { phase: "working" } },
-        ...(session.status === "running" ? {} : { result: { type: session.status, messageId,
-          data: { response: session.response, diagnostic: session.diagnostic, branch: "agent/" + id } } }) };
-    });
+    const turn = await readDatabase(db => db.getTurn(id, messageId));
     return turn ? queryResponse({ turn }) : queryResponse({ error: "Turn not indexed yet" }, 404);
   });
   route("GET", "/sessions/inspect", true, async request => {

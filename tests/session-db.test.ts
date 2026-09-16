@@ -179,3 +179,15 @@ test("per-turn recovery keeps waiting follow-ups separate from completed predece
   assert.equal((await h.request(url, 'wrong')).status, 401);
   assert.equal((await h.request('/turns/inspect?sessionId=two&messageId=' + second)).status, 404);
 });
+
+test("turn inspection does not infer outcomes from session snapshots", async t => {
+  const h = await harness(t);
+  const messageId = 'msg_' + 'c'.repeat(32);
+  await h.db.save(snapshot('one', { messageId, status: 'completed', response: 'Session result' }));
+  const url = '/turns/inspect?sessionId=one&messageId=' + messageId;
+  assert.equal((await h.request(url)).status, 404);
+  await h.db.saveTurn({ sessionId: 'one', messageId, state: 'running' });
+  const result = await (await h.request(url)).json();
+  assert.equal(result.turn.state, 'running');
+  assert.equal(result.turn.result, undefined);
+});

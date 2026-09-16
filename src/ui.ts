@@ -684,12 +684,9 @@ dialog::backdrop { background: rgba(20, 18, 14, .45); backdrop-filter: blur(2px)
     if (d.repository && s.repository !== d.repository) { s.repository = d.repository; changed = true; }
     if (d.model && s.model !== d.model) { s.model = d.model; changed = true; }
     if (d.createdAt && s.createdAt !== d.createdAt) { s.createdAt = d.createdAt; changed = true; }
-    var last = s.turns[s.turns.length - 1];
-    var target = d.messageId ? s.turns.find(function (t) { return t.messageId === d.messageId; }) : last;
-    // Upgrade snapshots cached before turn identities were persisted.
-    if (!target && last && last.messageId === 'stored') target = last;
-    if (!target && d.prompt) {
-      target = { messageId: d.messageId || 'stored', prompt: d.requestPrompt || d.prompt, status: 'running', phase: 'elsewhere', blocks: [], tools: [] };
+    var target = s.turns.find(function (t) { return t.messageId === d.messageId; });
+    if (!target && d.messageId && d.prompt) {
+      target = { messageId: d.messageId, prompt: d.requestPrompt || d.prompt, status: 'running', phase: 'elsewhere', blocks: [], tools: [] };
       s.turns.push(target); changed = true;
     }
     if (target && !active[s.id + ':' + target.messageId]) {
@@ -721,18 +718,10 @@ dialog::backdrop { background: rgba(20, 18, 14, .45); backdrop-filter: blur(2px)
     t.error = d.status === 'failed' ? 'Run failed (from stored state).' : undefined;
     if (!t.finishedAt) t.finishedAt = time(d.updatedAt) || Date.now();
   }
-  // Older snapshots lack a turn ID; keep summary polling as a compatibility fallback.
-  var pollTimer = null;
-  function schedulePoll() {
-    clearTimeout(pollTimer);
-    var s = session(current); if (!s || remote.unavailable) return;
-    var t = s.turns[s.turns.length - 1];
-    if (t && t.status === 'running' && !t.stream) pollTimer = setTimeout(function () { hydrate(s.id).then(schedulePoll); }, 8000);
-  }
   function openDrawer() { $('sidebar').classList.add('open'); $('scrim').classList.add('show'); $('menu').setAttribute('aria-expanded', 'true'); }
   function closeDrawer() { $('sidebar').classList.remove('open'); $('scrim').classList.remove('show'); $('menu').setAttribute('aria-expanded', 'false'); }
   function showNew() {
-    current = null; clearTimeout(pollTimer);
+    current = null;
     $('view-new').classList.add('active'); $('view-session').classList.remove('active');
     if (!$('repository').value) $('repository').value = state.repository;
     if (!$('model').value) $('model').value = state.model;
@@ -752,7 +741,6 @@ dialog::backdrop { background: rgba(20, 18, 14, .45); backdrop-filter: blur(2px)
     renderTranscript(s);
     renderSidebar();
     s.turns.forEach(function (t) { if ((t.status === 'running' || t.status === 'queued') && !active[id + ':' + t.messageId] && t.stream) attach(s, t); });
-    schedulePoll();
   }
 
   // ---------- Turns ----------
