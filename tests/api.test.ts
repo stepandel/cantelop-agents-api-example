@@ -90,11 +90,10 @@ test("verifies raw webhook signatures, ignores other actions and untrusted autho
 test("rejects oversized bodies", async () => {
   assert.equal((await harness().request("/sessions", { prompt: "x".repeat(1000001) })).status, 413);
 });
-test("events require a session ID and route to its actor", async () => {
+test("removed session-wide events endpoint returns 404", async () => {
   const h = harness();
-  assert.equal((await h.request("/events", undefined, { authorization: "Bearer api-secret" }, "GET")).status, 400);
-  assert.equal((await h.request("/events?sessionId=session-one", undefined, { authorization: "Bearer api-secret" }, "GET")).status, 200);
-  assert.deepEqual(h.opens, [{ id: "session-one", workspaceSlug: "agents", keepAliveSeconds: 300 }]);
+  assert.equal((await h.request("/events?sessionId=session-one", undefined, { authorization: "Bearer api-secret" }, "GET")).status, 404);
+  assert.equal(h.opens.length, 0);
 });
 test("issue redeliveries route to the same issue actor", async () => {
   const h = harness();
@@ -104,7 +103,7 @@ test("issue redeliveries route to the same issue actor", async () => {
   const second = await (await h.request("/webhooks/github", payload, { ...headers, "x-github-delivery": "second" })).json() as { sessionId: string };
   assert.equal(first.sessionId, second.sessionId);
   assert.ok(first.sessionId.startsWith("issue-"));
-  assert.equal(first.events, `/events?sessionId=${first.sessionId}`);
+  assert.equal(first.events, undefined);
   assert.deepEqual(h.opens[0], h.opens[1]);
 });
 test("rejects provider objects for sessions and issue rules", async () => {

@@ -285,7 +285,7 @@ policy. Disconnecting only closes the subscription—it does not cancel the agen
 Close browser EventSource clients on terminal events to prevent automatic
 reconnection. Fetch streaming is convenient for clients using Bearer headers.
 An EOF without a terminal event is a transport interruption, not successful work.
-The original `/events` endpoint remains an unmodified session-wide stream.
+Use the returned `stream` URL for each request; session-wide event subscriptions are not exposed.
 
 ## Optional: start tasks from GitHub issues
 
@@ -593,3 +593,16 @@ at admission, at turn start, on status changes, and on completion. Follow-ups
 queue behind earlier turns in the same session; other sessions run concurrently. Recovery requires the session database; without it, live
 streams still work but expired replay cannot be recovered through this endpoint.
 Turn recovery reads the per-turn index; session snapshots do not substitute for missing turn records.
+
+### Current storage and API requirements
+
+Only per-repository `.agent-api/issue-rules/OWNER/REPO.json` rules are read;
+configure repository rules again if they exist only in `issue-rules.json`.
+Snapshots must contain their original creation and update timestamps for reindexing,
+and turn IDs for console stream attachment. Turn recovery requires `agent_turns`
+records. Older cached summaries are not upgraded automatically; clear browser
+session history if it contains summaries without turn IDs.
+
+Dispatch responses expose `stream`; the `events` field and `/events` endpoint
+have been removed. Agent replies are recognized by `<!-- cantelop-agent-reply -->`;
+replies without this marker are treated as ordinary comments.
