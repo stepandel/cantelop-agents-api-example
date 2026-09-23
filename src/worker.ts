@@ -9,10 +9,20 @@ export interface Dependencies {
   sessionDatabase?: (env: Env) => SessionDatabase | undefined;
   checkout: typeof checkout;
   runAgent: typeof runAgent;
+  acknowledge?: (repository: string, number: number, commentId: number | undefined, env: Env, signal: AbortSignal) => Promise<void>;
   comment: (repository: string, number: number, body: string, env: Env, signal: AbortSignal) => Promise<void>;
 }
 export const dependencies: Dependencies = {
   checkout, runAgent,
+  async acknowledge(repo, number, commentId, env, signal) {
+    const target = commentId === undefined ? `issues/${number}` : `issues/comments/${commentId}`;
+    const response = await fetch(`https://api.github.com/repos/${repo}/${target}/reactions`, {
+      method: "POST", redirect: "error", signal,
+      headers: { authorization: `Bearer ${env.GITHUB_TOKEN}`, accept: "application/vnd.github+json", "content-type": "application/json", "user-agent": "cantelop-agents-api", "x-github-api-version": "2022-11-28" },
+      body: JSON.stringify({ content: "eyes" }),
+    });
+    if (!response.ok) throw new CommandError({ code: "command_failed", phase: "github_reaction", operation: "add_reaction", statusCode: response.status });
+  },
   async comment(repo, number, body, env, signal) {
     const response = await fetch(`https://api.github.com/repos/${repo}/issues/${number}/comments`, {
       method: "POST", redirect: "error", signal,
@@ -96,6 +106,13 @@ export async function handle(root: string, command: Command, messageId: string, 
     phase = previousPhase;
   };
   await saveJSON(receiptFile, { status: "started", sessionId: spec.sessionId });
+  if ((command.type === "issue" || command.type === "issue_comment") && deps.acknowledge) {
+    try {
+      await deps.acknowledge(spec.repository, command.type === "issue" ? command.issue.number : command.number, command.type === "issue_comment" ? command.commentId : undefined, env, signal);
+    } catch {
+      console.warn(JSON.stringify({ component: "agent-api", event: "github.reaction_failed", repository: spec.repository, issue: command.type === "issue" ? command.issue.number : command.number, target: command.type === "issue_comment" ? "comment" : "issue" }));
+    }
+  }
   try {
     await saveSession();
     phase = "checkout";

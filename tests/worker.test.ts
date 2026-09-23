@@ -3,11 +3,26 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { handle, type Dependencies } from "../src/worker.js";
+import { dependencies, handle, type Dependencies } from "../src/worker.js";
 import { agentEnvironment, checkout, git, CommandError } from "../src/runtime.js";
 import type { Command } from "../src/contracts.js";
 const env = { GITHUB_TOKEN: "test-only", OPENROUTER_API_KEY: "test-openrouter", GITHUB_REPOSITORIES: "owner/repo" };
 const model = "anthropic/claude-sonnet-4.5";
+test("GitHub acknowledgements use eyes reactions on issues and comments", async t => {
+  const requests: { url: string; body: string | undefined }[] = [];
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+    requests.push({ url: String(input), body: init?.body?.toString() });
+    return new Response(null, { status: 201 });
+  });
+  const acknowledge = dependencies.acknowledge!;
+  const signal = new AbortController().signal;
+  await acknowledge("owner/repo", 9, undefined, env, signal);
+  await acknowledge("owner/repo", 9, 123, env, signal);
+  assert.deepEqual(requests, [
+    { url: "https://api.github.com/repos/owner/repo/issues/9/reactions", body: '{"content":"eyes"}' },
+    { url: "https://api.github.com/repos/owner/repo/issues/comments/123/reactions", body: '{"content":"eyes"}' },
+  ]);
+});
 test("issue comment follow-ups retain conversation and deduplicate by comment identity", async t => {
   const h = await harness(t);
   const { issueReplyMarker, issueSessionId } = await import("../src/contracts.js");
@@ -24,9 +39,11 @@ test("issue comment follow-ups retain conversation and deduplicate by comment id
   assert.equal(h.runs[1]?.model, model);
   assert.match(h.runs[1]!.prompt, /proceed/);
   assert.match(String((h.comments[1] as unknown[])[2]), /cantelop-agent-reply/);
+  assert.deepEqual(h.acknowledgements, [["owner/repo", 9, undefined], ["owner/repo", 9, 123]]);
   await h.run({ ...comment, deliveryId: "redelivery" }, "duplicate");
   assert.equal(h.runs.length, 2);
   assert.equal(h.comments.length, 2);
+  assert.equal(h.acknowledgements.length, 2);
   for (const ignored of [{ ...comment, commentId: 124, association: "NONE" }, { ...comment, commentId: 125, body: issueReplyMarker }]) {
     assert.equal((await h.run(ignored, `ignored-${ignored.commentId}`)).type, "ignored");
   }
@@ -42,12 +59,14 @@ async function harness(t: { after: (fn: () => Promise<void>) => void }) {
   t.after(() => rm(root, { recursive: true, force: true }));
   const runs: Parameters<Dependencies["runAgent"]>[0][] = [];
   const comments: unknown[] = [];
+  const acknowledgements: [string, number, number | undefined][] = [];
   const deps: Dependencies = {
     async checkout() { return root; },
     async runAgent(options) { runs.push(options); if (!options.id) await options.onCreated("opencode-1"); return "Done"; },
+    async acknowledge(repository, number, commentId) { acknowledgements.push([repository, number, commentId]); },
     async comment(...args) { comments.push(args); },
   };
-  return { root, deps, runs, comments, run: (command: Command, id: string) => handle(root, command, id, env, new AbortController().signal, deps) };
+  return { root, deps, runs, comments, acknowledgements, run: (command: Command, id: string) => handle(root, command, id, env, new AbortController().signal, deps) };
 }
 test("persists selected model and OpenCode conversation across follow-ups", async t => {
   const h = await harness(t);
@@ -79,6 +98,16 @@ test("failed side effects are not automatically replayed", async t => {
   assert.equal(JSON.stringify(failed).includes("secret provider error"), false);
   h.deps.runAgent = async () => { assert.fail("must not rerun"); };
   assert.equal((await h.run(command, "m1")).type, "failed");
+});
+test("a failed acknowledgement does not prevent issue work", async t => {
+  const h = await harness(t);
+  t.mock.method(console, "warn", () => {});
+  h.deps.acknowledge = async () => { throw new Error("GitHub is unavailable"); };
+  await h.run({ type: "rule", repository: "owner/repo", model }, "rule");
+  const result = await h.run({ type: "issue", deliveryId: "opened", issue: { repository: "owner/repo", number: 10, title: "Fix", body: "Fix", association: "OWNER" } }, "initial");
+  assert.equal(result.type, "completed");
+  assert.equal(h.runs.length, 1);
+  assert.equal(h.comments.length, 1);
 });
 test("checkout diagnostics survive persistence and follow-up failure events", async t => {
   const h = await harness(t);

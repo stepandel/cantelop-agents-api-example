@@ -317,7 +317,9 @@ existing session. The raw body is verified with HMAC-SHA256;
 unknown repositories are rejected. Only issues from `OWNER`, `MEMBER` and
 `COLLABORATOR` authors initiate runs. Other authors/actions are ignored. If neither a repository rule nor
 `GITHUB_ISSUE_MODEL` is available, the worker emits `ignored` without starting an
-agent. Configure a model and redeliver the webhook to process it.
+agent. Configure a model and redeliver the webhook to process it. When a delivery
+is admitted, the worker immediately adds an 👀 reaction to the new issue or to the
+follow-up comment. Reaction failures are logged and do not prevent the coding turn.
 
 New comments from `OWNER`, `MEMBER`, or `COLLABORATOR` users queue follow-ups in
 the issue's existing session, retaining its model and conversation. The comment's
