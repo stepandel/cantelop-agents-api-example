@@ -15,7 +15,7 @@
     "db:setup": "node --env-file-if-exists=.env --import tsx scripts/setup-session-db.ts"
   },
   "dependencies": {
-    "@cantelop/sdk": "0.8.1",
+    "@cantelop/sdk": "0.14.0",
     "@libsql/client": "0.18.0",
     "@opencode-ai/sdk": "1.18.30"
   },
